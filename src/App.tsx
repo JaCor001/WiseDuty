@@ -5,7 +5,7 @@ import './App.css'
 
 function App() {
   return (
-    <Router basename="/WiseDuty2">
+    <Router basename="/WiseDuty">
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/calendar" element={<Calendar />} />

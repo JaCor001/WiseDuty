@@ -3,6 +3,6 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: '/WiseDuty/', // Set base path for GitHub Pages deployment
   plugins: [react()],
-  base: '/WiseDuty2/', // Update this to match your GitHub repo name
-})
+});
