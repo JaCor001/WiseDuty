@@ -150,7 +150,7 @@ function Landing() {
       <div className="landing-container">
         <header>
           <div className="nav-container">
-            <div className="logo-placeholder">DutyWise</div>
+            <div className="logo-placeholder">WiseDuty</div>
             <nav>
               <Link to="/calendar">Calendar</Link>
               <button className="settings-button" onClick={() => setShowSettings(true)}>⚙️</button>
@@ -165,36 +165,47 @@ function Landing() {
           </div>
         </header>
 
-        <section className="hero">
-          <h1>DutyWise</h1>
-          <p>Manage your pilot duties with ease. Track schedules, rest periods, and stay compliant.</p>
-          <Link to="/calendar" className="cta-button">Get Started</Link>
-        </section>
+        <main className="landing-shell">
+          <div className="landing-title">
+            <h1>WiseDuty</h1>
+          </div>
 
-        <section className="features">
-          <h2>Features</h2>
-          <div className="feature-grid">
-            <div className="feature">
-              <h3>Calendar View</h3>
-              <p>Visual calendar with color-coded duty and rest periods.</p>
-            </div>
-            <div className="feature">
-              <h3>Event Management</h3>
-              <p>Add, edit, and delete duty events with ease.</p>
-            </div>
-            <div className="feature">
-              <h3>Dark Mode</h3>
-              <p>Switch between light and dark themes.</p>
-            </div>
-            <div className="feature">
-              <h3>Mobile Friendly</h3>
-              <p>Works great on all devices.</p>
+          <div className="landing-hook">
+            <p className="hook-text">
+              Invisible <span className="hook-muted">Duty Regs</span> no more. Seamlessly add
+              <span className="pill pill-red"> color</span>
+              -
+              <span className="pill pill-amber"> coded</span>
+              <span className="pill pill-blue"> clarity</span>
+               to your schedule. Optimize your strategy -
+              <span className="hook-script"> Enhance your life.</span>
+            </p>
+          </div>
+
+          <div className="landing-cta">
+            <Link to="/calendar" className="cta-button">Get Started</Link>
+          </div>
+
+          <section className="feature-list">
+            <h2>Features</h2>
+            <ul>
+              <li>Crystal-clear duty awareness in one color-coded glance.</li>
+              <li>Your shield against reduced duty situational awareness.</li>
+              <li>Knowledge is power: bid smarter, trade pairings, and optimize at a glance.</li>
+              <li>Customized schedule suggestions that align regulations with your schedule preferences.</li>
+              <li>Let WiseDuty carry the mental load of every duty reg so you can fly the schedule you actually want.</li>
+            </ul>
+          </section>
+
+          <div className="demo-video">
+            <div className="video-placeholder">
+              <span>Demo Video</span>
             </div>
           </div>
-        </section>
+        </main>
 
         <footer>
-          <p>&copy; 2025 DutyWise. All rights reserved.</p>
+          <p>&copy; 2025 WiseDuty. All rights reserved.</p>
         </footer>
       </div>
       {showSettings && (
