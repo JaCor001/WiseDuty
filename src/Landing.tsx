@@ -150,9 +150,10 @@ function Landing() {
       <div className="landing-container">
         <header>
           <div className="nav-container">
-            <div className="logo-placeholder">WiseDuty</div>
+            <div className="logo-placeholder">(LOGO)</div>
             <nav>
               <Link to="/calendar">Calendar</Link>
+              <Link to="/login">Login</Link>
               <button className="settings-button" onClick={() => setShowSettings(true)}>⚙️</button>
               <button className="theme-toggle" onClick={() => {
                 const newMode = !darkMode;
@@ -172,12 +173,13 @@ function Landing() {
 
           <div className="landing-hook">
             <p className="hook-text">
-              Invisible <span className="hook-muted">Duty Regs</span> no more. Seamlessly add
+              <span className="hook-line-1">Invisible <span className="hook-muted">Duty Regs</span> no more. Seamlessly add
               <span className="pill pill-red"> color</span>
               -
               <span className="pill pill-amber"> coded</span>
               <span className="pill pill-blue"> clarity</span>
-               to your schedule. Optimize your strategy -
+               to your schedule.</span><br />
+              Optimize your strategy -
               <span className="hook-script"> Enhance your life.</span>
             </p>
           </div>

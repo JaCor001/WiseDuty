@@ -177,7 +177,12 @@ nav a:hover {
   font-size: 3rem;
   margin: 0;
   color: var(--primary-color);
-  text-shadow: 0 0 20px rgba(63, 193, 255, 0.24);
+  /* Subtle 3D depth with layered shadows */
+  text-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.45),
+    0 3px 6px rgba(0, 0, 0, 0.32),
+    0 6px 12px rgba(0, 0, 0, 0.25),
+    0 0 16px rgba(63, 193, 255, 0.18);
 }
 
 .landing-hook {
@@ -195,7 +200,7 @@ nav a:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-top: 0.35rem;
+  margin-top: 3rem;
   align-self: center;
 }
 
@@ -208,6 +213,11 @@ nav a:hover {
   font-size: 1.05rem;
   border-left: 4px solid var(--primary-color);
   padding-left: 0.75rem;
+}
+
+.hook-line-1 {
+  display: inline-block;
+  white-space: nowrap;
 }
 
 .hook-muted {
