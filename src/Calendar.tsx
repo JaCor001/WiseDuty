@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import './Calendar.css'
 import './App.css'
 
@@ -900,17 +901,24 @@ function Calendar() {
     <>
     <div className={`calendar ${darkMode ? 'dark' : 'light'} ${animating ? 'animating' : ''}`}>
       <header className="calendar-header">
-        <h2>Calendar</h2>
-        <div className="header-buttons">
-          <button onClick={() => setShowSettings(true)}>⚙️</button>
-          <button onClick={() => setShowHamburgerMenu(true)}>☰</button>
-          <button className="theme-toggle" onClick={() => {
-            const newMode = !darkMode;
-            setDarkMode(newMode);
-            localStorage.setItem('theme', newMode ? 'dark' : 'light');
-          }}>
-            {darkMode ? '☀️' : '🌙'}
-          </button>
+        <div className="nav-container" style={{ width: '100%' }}>
+          <Link to="/" className="logo-placeholder">(LOGO)</Link>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <h2 style={{ margin: 0 }}>Calendar</h2>
+            <Link to="/Signup">Signup</Link>
+            <Link to="/login">Login</Link>
+          </div>
+          <div className="header-buttons">
+            <button onClick={() => setShowSettings(true)}>⚙️</button>
+            <button onClick={() => setShowHamburgerMenu(true)}>☰</button>
+            <button className="theme-toggle" onClick={() => {
+              const newMode = !darkMode;
+              setDarkMode(newMode);
+              localStorage.setItem('theme', newMode ? 'dark' : 'light');
+            }}>
+              {darkMode ? '☀️' : '🌙'}
+            </button>
+          </div>
         </div>
       </header>
       <div className="calendar-page-container">

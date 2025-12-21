@@ -150,7 +150,7 @@ function Landing() {
       <div className="landing-container">
         <header>
           <div className="nav-container">
-            <div className="logo-placeholder">(LOGO)</div>
+            <Link to="/" className="logo-placeholder">(LOGO)</Link>
             <nav>
               <Link to="/calendar">Calendar</Link>
               <Link to="/login">Login</Link>
@@ -185,7 +185,7 @@ function Landing() {
           </div>
 
           <div className="landing-cta">
-            <Link to="/calendar" className="cta-button">Get Started</Link>
+            <Link to="/Signup" className="cta-button">Get Started</Link>
           </div>
 
           <section className="feature-list">
