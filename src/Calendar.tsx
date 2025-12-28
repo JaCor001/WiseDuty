@@ -900,7 +900,13 @@ function Calendar() {
   return (
     <>
     <div className={`calendar ${darkMode ? 'dark' : 'light'} ${animating ? 'animating' : ''}`}>
-      <header className="calendar-header">
+      <div className="auth-backdrop" aria-hidden="true">
+        <div className="bg-video-blur">
+          <div className="video-placeholder">Demo Video</div>
+        </div>
+        <div className="backdrop-overlay" />
+      </div>
+      <header className="site-header calendar-header">
         <div className="nav-container" style={{ width: '100%' }}>
           <Link to="/" className="logo-placeholder">(LOGO)</Link>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>

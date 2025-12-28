@@ -148,7 +148,13 @@ function Landing() {
   return (
     <>
       <div className="landing-container">
-        <header>
+        <div className="auth-backdrop" aria-hidden="true">
+          <div className="bg-video-blur">
+            <div className="video-placeholder">Demo Video</div>
+          </div>
+          <div className="backdrop-overlay" />
+        </div>
+        <header className="site-header">
           <div className="nav-container">
             <Link to="/" className="logo-placeholder">(LOGO)</Link>
             <nav>
@@ -206,7 +212,7 @@ function Landing() {
           </div>
         </main>
 
-        <footer>
+        <footer className="site-footer">
           <p>&copy; 2025 WiseDuty. All rights reserved.</p>
         </footer>
       </div>
