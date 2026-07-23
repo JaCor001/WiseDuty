@@ -1,15 +1,19 @@
 {
-  "name": "wiseduty2",
+  "name": "wiseduty",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:native": "tsc -b && CAPACITOR_PLATFORM=1 vite build",
     "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "preview": "vite preview",
     "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
+    "deploy": "gh-pages -d dist",
+    "cap:sync": "npm run build:native && npx cap sync"
   },
   "dependencies": {
     "@capacitor/android": "^8.0.0",
@@ -34,6 +38,6 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4",
-    "vite-plugin-pwa": "^1.2.0"
+    "vitest": "^3.2.4"
   }
 }
