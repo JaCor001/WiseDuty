@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from 'react'
 import { Link } from 'react-router-dom'
 import './Calendar.css'
 import './App.css'
@@ -261,6 +268,46 @@ function Calendar() {
   const selectDate = (date: Date) => {
     setSelectedDate(date)
     setMenuDate(date)
+  }
+
+  const clearDaySelection = () => {
+    setSelectedDate(null)
+    setMenuDate(null)
+    setShowMenu(false)
+  }
+
+  /**
+   * Clicking empty chrome (not a day cell, panel, or control) closes the
+   * day-details strip and clears selection.
+   */
+  const handleCalendarBackgroundClick = (
+    e: ReactMouseEvent<HTMLElement>,
+  ) => {
+    const target = e.target as Element | null
+    if (!target) return
+    if (
+      target.closest(
+        [
+          '.day',
+          '.day-details',
+          '.slide-menu',
+          '.site-header',
+          '.month-header',
+          '.modal-content',
+          '.nav-prev',
+          '.nav-next',
+          'button',
+          'a',
+          'input',
+          'select',
+          'textarea',
+          'label',
+        ].join(','),
+      )
+    ) {
+      return
+    }
+    clearDaySelection()
   }
 
   const handleClick = (date: Date) => {
@@ -587,6 +634,7 @@ function Calendar() {
     <>
       <div
         className={`calendar ${darkMode ? 'dark' : 'light'} ${animating ? 'animating' : ''}`}
+        onClick={handleCalendarBackgroundClick}
       >
         <div className="auth-backdrop" aria-hidden="true">
           <div className="bg-video-blur">
@@ -780,7 +828,7 @@ function Calendar() {
                   type="button"
                   className="day-details-close"
                   aria-label="Close day details"
-                  onClick={() => setSelectedDate(null)}
+                  onClick={() => clearDaySelection()}
                 >
                   <IconClose size={18} />
                 </button>
@@ -832,7 +880,12 @@ function Calendar() {
           )}
 
           {showMenu && menuDate && (
-            <div className="modal" onClick={() => setShowMenu(false)}>
+            <div
+              className="modal"
+              onClick={() => {
+                clearDaySelection()
+              }}
+            >
               <div
                 className="modal-content day-menu-modal"
                 onClick={(e) => e.stopPropagation()}
@@ -845,7 +898,7 @@ function Calendar() {
                     type="button"
                     className="day-details-close"
                     aria-label="Close"
-                    onClick={() => setShowMenu(false)}
+                    onClick={() => clearDaySelection()}
                   >
                     <IconClose size={18} />
                   </button>
