@@ -56,16 +56,50 @@ export function clearDeletedEvents(): void {
   }
 }
 
+/** Pure: split active list by predicate without touching storage. */
+export function partitionEvents(
+  active: DutyEvent[],
+  predicate: (e: DutyEvent) => boolean,
+): { kept: DutyEvent[]; removed: DutyEvent[] } {
+  const kept: DutyEvent[] = []
+  const removed: DutyEvent[] = []
+  for (const e of active) {
+    if (predicate(e)) removed.push(e)
+    else kept.push(e)
+  }
+  return { kept, removed }
+}
+
+/** Pure: merge removed into an existing deleted bin by id. */
+export function mergeIntoDeletedBin(
+  existingDeleted: DutyEvent[],
+  removed: DutyEvent[],
+): DutyEvent[] {
+  const byId = new Map(existingDeleted.map((e) => [e.id, e]))
+  for (const e of removed) byId.set(e.id, e)
+  return Array.from(byId.values())
+}
+
+/** Pure: merge deleted events into active (skip ids already present). */
+export function mergeRestoredEvents(
+  active: DutyEvent[],
+  deleted: DutyEvent[],
+): DutyEvent[] {
+  if (deleted.length === 0) return active
+  const existing = new Set(active.map((e) => e.id))
+  const toAdd = deleted.filter((e) => !existing.has(e.id))
+  return toAdd.length === 0 ? active : [...active, ...toAdd]
+}
+
 /**
- * Soft-delete: remove matching events from active list and merge them into
- * the deleted bin (by id). Returns next active + deleted snapshots.
+ * Soft-delete with storage I/O. Safe to call once from an event handler
+ * (not from inside a setState updater — React may run those twice).
  */
 export function softDeleteEvents(
   active: DutyEvent[],
   predicate: (e: DutyEvent) => boolean,
 ): { active: DutyEvent[]; deleted: DutyEvent[]; removedCount: number } {
-  const removed = active.filter(predicate)
-  const nextActive = active.filter((e) => !predicate(e))
+  const { kept, removed } = partitionEvents(active, predicate)
   if (removed.length === 0) {
     return {
       active,
@@ -73,19 +107,17 @@ export function softDeleteEvents(
       removedCount: 0,
     }
   }
-  const byId = new Map(loadDeletedEvents().map((e) => [e.id, e]))
-  for (const e of removed) byId.set(e.id, e)
-  const nextDeleted = Array.from(byId.values())
+  const nextDeleted = mergeIntoDeletedBin(loadDeletedEvents(), removed)
   saveDeletedEvents(nextDeleted)
   return {
-    active: nextActive,
+    active: kept,
     deleted: nextDeleted,
     removedCount: removed.length,
   }
 }
 
 /**
- * Restore all soft-deleted events into the active list (skip ids already present).
+ * Restore with storage I/O. Call once from an event handler, not from setState.
  */
 export function restoreDeletedEvents(active: DutyEvent[]): {
   active: DutyEvent[]
@@ -95,12 +127,11 @@ export function restoreDeletedEvents(active: DutyEvent[]): {
   if (deleted.length === 0) {
     return { active, restoredCount: 0 }
   }
-  const existing = new Set(active.map((e) => e.id))
-  const toAdd = deleted.filter((e) => !existing.has(e.id))
+  const next = mergeRestoredEvents(active, deleted)
   clearDeletedEvents()
   return {
-    active: [...active, ...toAdd],
-    restoredCount: toAdd.length,
+    active: next,
+    restoredCount: deleted.length,
   }
 }
 

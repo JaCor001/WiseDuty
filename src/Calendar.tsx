@@ -38,11 +38,14 @@ import {
 import { useSettings } from './features/settings/SettingsContext'
 import { scheduleTravelRestReminders } from './shared/notifications'
 import {
+  clearDeletedEvents,
   loadDeletedEvents,
   loadEvents,
-  restoreDeletedEvents,
+  mergeIntoDeletedBin,
+  mergeRestoredEvents,
+  partitionEvents,
+  saveDeletedEvents,
   saveEvents,
-  softDeleteEvents,
 } from './shared/storage'
 import FreeTimeInput from './shared/ui/FreeTimeInput'
 import SettingsPanel from './shared/ui/SettingsPanel'
@@ -958,36 +961,43 @@ function Calendar() {
               })}
               deletedEventCount={deletedEventCount}
               onDeleteEvents={(scope) => {
-                setEvents((prev) => {
-                  if (scope === 'all') {
-                    const result = softDeleteEvents(prev, () => true)
-                    setDeletedEventCount(result.deleted.length)
-                    return result.active
-                  }
-                  const monthStart = new Date(
-                    currentDate.getFullYear(),
-                    currentDate.getMonth(),
-                    1,
-                  )
-                  const monthEnd = new Date(
-                    currentDate.getFullYear(),
-                    currentDate.getMonth() + 1,
-                    1,
-                  )
-                  const result = softDeleteEvents(
-                    prev,
-                    (e) => e.start >= monthStart && e.start < monthEnd,
-                  )
-                  setDeletedEventCount(result.deleted.length)
-                  return result.active
-                })
+                // Snapshot current events once (not inside setState — avoids Strict Mode double I/O)
+                const prev = events
+                const monthStart = new Date(
+                  currentDate.getFullYear(),
+                  currentDate.getMonth(),
+                  1,
+                )
+                const monthEnd = new Date(
+                  currentDate.getFullYear(),
+                  currentDate.getMonth() + 1,
+                  1,
+                )
+                const predicate =
+                  scope === 'all'
+                    ? () => true
+                    : (e: DutyEvent) =>
+                        e.start >= monthStart && e.start < monthEnd
+
+                const { kept, removed } = partitionEvents(prev, predicate)
+                if (removed.length === 0) return
+
+                const nextDeleted = mergeIntoDeletedBin(
+                  loadDeletedEvents(),
+                  removed,
+                )
+                saveDeletedEvents(nextDeleted)
+                setEvents(kept)
+                setDeletedEventCount(nextDeleted.length)
               }}
               onRestoreDeletedEvents={() => {
-                setEvents((prev) => {
-                  const result = restoreDeletedEvents(prev)
-                  setDeletedEventCount(0)
-                  return result.active
-                })
+                // Read bin once, then update state purely — never clear storage inside setState
+                const bin = loadDeletedEvents()
+                if (bin.length === 0) return
+
+                setEvents((prev) => mergeRestoredEvents(prev, bin))
+                clearDeletedEvents()
+                setDeletedEventCount(0)
               }}
             />
           )}
