@@ -41,12 +41,12 @@ import { loadEvents, saveEvents } from './shared/storage'
 import FreeTimeInput from './shared/ui/FreeTimeInput'
 import SettingsPanel from './shared/ui/SettingsPanel'
 import TimeZoneSelector from './shared/ui/TimeZoneSelector'
-import { IconMenu, IconMoon, IconSettings, IconSun } from './shared/ui/icons'
+import ThemeToggle from './shared/ui/ThemeToggle'
+import { IconMenu, IconSettings } from './shared/ui/icons'
 
 function Calendar() {
   const {
     darkMode,
-    toggleDarkMode,
     timeFormat,
     regulator,
     acclTZ,
@@ -610,16 +610,7 @@ function Calendar() {
               >
                 <IconMenu />
               </button>
-              <button
-                type="button"
-                className="theme-toggle"
-                aria-label={
-                  darkMode ? 'Switch to light mode' : 'Switch to dark mode'
-                }
-                onClick={toggleDarkMode}
-              >
-                {darkMode ? <IconSun /> : <IconMoon />}
-              </button>
+              <ThemeToggle />
             </div>
           </div>
         </header>

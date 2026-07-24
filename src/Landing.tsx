@@ -2,12 +2,11 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
 import './Calendar.css'
-import { useSettings } from './features/settings/SettingsContext'
 import SettingsPanel from './shared/ui/SettingsPanel'
-import { IconMoon, IconSettings, IconSun } from './shared/ui/icons'
+import ThemeToggle from './shared/ui/ThemeToggle'
+import { IconSettings } from './shared/ui/icons'
 
 function Landing() {
-  const { darkMode, toggleDarkMode } = useSettings()
   const [showSettings, setShowSettings] = useState(false)
 
   return (
@@ -37,14 +36,7 @@ function Landing() {
               >
                 <IconSettings />
               </button>
-              <button
-                type="button"
-                className="theme-toggle"
-                aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-                onClick={toggleDarkMode}
-              >
-                {darkMode ? <IconSun /> : <IconMoon />}
-              </button>
+              <ThemeToggle />
             </div>
           </div>
         </header>

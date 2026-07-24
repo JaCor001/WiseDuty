@@ -1,0 +1,120 @@
+.theme-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 3.35rem;
+  height: 1.85rem;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  color: var(--text-secondary);
+  opacity: 0.9;
+  flex-shrink: 0;
+  transition: background-color 0.2s ease, border-color 0.2s ease, opacity 0.15s ease,
+    box-shadow 0.15s ease;
+  /* Reset header button sizing */
+  width: 3.35rem !important;
+  height: 1.85rem !important;
+  min-width: 3.35rem !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.theme-switch:hover {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--primary-color) 35%, var(--border-color));
+  background: var(--hover-bg);
+  color: var(--text-color);
+}
+
+.theme-switch:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring) !important;
+}
+
+.theme-switch-track {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.38rem;
+  pointer-events: none;
+}
+
+.theme-switch-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.95rem;
+  height: 0.95rem;
+  opacity: 0.45;
+  transition: opacity 0.2s ease, color 0.2s ease;
+}
+
+.theme-switch-icon svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+/* Active side is brighter */
+.theme-switch[data-mode='light'] .theme-switch-icon-sun,
+.theme-switch[data-mode='dark'] .theme-switch-icon-moon {
+  opacity: 0.9;
+  color: var(--primary-color);
+}
+
+.theme-switch-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0.18rem;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.12));
+  transform: translate(0, -50%);
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 0.2s ease, border-color 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-color);
+  pointer-events: none;
+}
+
+.theme-switch[data-mode='dark'] .theme-switch-thumb {
+  transform: translate(1.5rem, -50%);
+  border-color: color-mix(in srgb, var(--primary-color) 40%, var(--border-color));
+}
+
+.theme-switch-thumb svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+/* Header chrome: don't force square 2.15rem on this control */
+.header-actions .theme-switch,
+.header-buttons .theme-switch,
+.site-header .theme-switch,
+.auth-header .theme-switch,
+.calendar-header .theme-switch {
+  width: 3.35rem !important;
+  height: 1.85rem !important;
+  min-width: 3.35rem !important;
+  padding: 0 !important;
+  border-radius: 999px !important;
+  opacity: 0.92;
+}
+
+.header-actions .theme-switch:hover,
+.header-buttons .theme-switch:hover,
+.calendar-header .theme-switch:hover {
+  background: var(--hover-bg) !important;
+  color: var(--text-color) !important;
+  opacity: 1;
+}

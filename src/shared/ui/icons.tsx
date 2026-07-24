@@ -31,27 +31,37 @@ function Svg({
   )
 }
 
-/** Settings — clean cog */
+/**
+ * Settings — horizontal sliders (clearly distinct from sun/moon).
+ * Reads as “preferences / adjust” without gear rays.
+ */
 export function IconSettings(props: IconProps) {
   return (
     <Svg {...props}>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M12 2.5v2.2M12 19.3v2.2M4.6 6.5l1.6 1.6M17.8 15.9l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 17.5l1.6-1.6M17.8 8.1l1.6-1.6" />
+      <path d="M4 7h10" />
+      <path d="M18 7h2" />
+      <circle cx="16" cy="7" r="2" />
+      <path d="M4 17h2" />
+      <path d="M10 17h10" />
+      <circle cx="8" cy="17" r="2" />
+      <path d="M4 12h4" />
+      <path d="M12 12h8" />
+      <circle cx="10" cy="12" r="2" />
     </Svg>
   )
 }
 
-/** Sun — switch to light mode (shown while dark) */
+/** Sun — light mode */
 export function IconSun(props: IconProps) {
   return (
     <Svg {...props}>
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2.5v2M12 19.5v2M4.5 4.5l1.4 1.4M18.1 18.1l1.4 1.4M2.5 12h2M19.5 12h2M4.5 19.5l1.4-1.4M18.1 5.9l1.4-1.4" />
+      <circle cx="12" cy="12" r="3.5" />
+      <path d="M12 3v1.6M12 19.4V21M5.05 5.05l1.15 1.15M17.8 17.8l1.15 1.15M3 12h1.6M19.4 12H21M5.05 18.95l1.15-1.15M17.8 6.2l1.15-1.15" />
     </Svg>
   )
 }
 
-/** Moon — switch to dark mode (shown while light) */
+/** Moon — dark mode */
 export function IconMoon(props: IconProps) {
   return (
     <Svg {...props}>
