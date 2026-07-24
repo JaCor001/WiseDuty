@@ -1,13 +1,15 @@
 .calendar {
   width: 100%;
-  height: 100vh;
-  padding: env(safe-area-inset-top, 1rem) 0 env(safe-area-inset-bottom, 1rem) 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: env(safe-area-inset-top, 0) 0 env(safe-area-inset-bottom, 0) 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  transition: opacity 0.3s ease;
+  transition: opacity 0.25s ease;
   color: var(--text-color);
+  background: var(--bg-primary);
   overflow: hidden;
   position: relative;
   isolation: isolate;
@@ -18,47 +20,65 @@
 .calendar > footer {
   position: relative;
   z-index: 1;
+  width: 100%;
 }
 
 .calendar-page-container {
   width: 100%;
+  max-width: var(--page-max, 1120px);
   margin: 0 auto;
-  padding: 0;
+  padding: 1rem var(--page-pad, 1.25rem) 2rem;
   flex: 1;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
-h1 {
+.calendar h1,
+.month-header h1 {
   text-align: center;
   color: var(--text-color);
   margin: 0;
+  font-size: 1.25rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
 .month-header {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
+  gap: 0.75rem;
+  margin-bottom: 1.15rem;
 }
 
-.nav-prev, .nav-next {
-  background: var(--bg-secondary);
+.nav-prev,
+.nav-next {
+  background: var(--card-bg);
   color: var(--text-color);
   border: 1px solid var(--border-color);
-  padding: 0.5rem;
-  border-radius: 4px;
+  padding: 0.4rem 0.65rem;
+  border-radius: var(--radius-sm, 8px);
   cursor: pointer;
-  transition: background-color 0.3s;
-  font-size: 1.2rem;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  font-size: 1.1rem;
+  line-height: 1;
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.nav-prev:hover, .nav-next:hover {
+.nav-prev:hover,
+.nav-next:hover {
   background: var(--hover-bg);
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+  transform: none;
 }
 
 .calendar.animating {
-  opacity: 0;
+  opacity: 0.35;
 }
 
 .calendar-header {
@@ -72,32 +92,37 @@ h1 {
 .calendar-header h2 {
   color: var(--text-color);
   margin: 0;
+  font-size: 1.1rem;
+  font-weight: 650;
 }
 
 .header-buttons {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.35rem;
+  align-items: center;
 }
 
 .calendar-header button {
-  background: var(--bg-secondary);
+  background: transparent;
   color: var(--text-color);
-  border: 1px solid var(--border-color);
-  padding: 0.5rem;
-  border-radius: 4px;
+  border: 1px solid transparent;
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--radius-sm, 8px);
   cursor: pointer;
-  transition: background-color 0.3s;
-  filter: grayscale(1);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  filter: none;
 }
 
 .calendar-header button:hover {
   background: var(--hover-bg);
+  border-color: var(--border-color);
 }
 
 .calendar-container {
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
 }
 
 
@@ -111,35 +136,40 @@ h1 {
 .calendar-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 0.5rem;
-  width: 90%;
+  gap: 0.4rem;
+  width: 100%;
   margin: 0 auto;
   max-width: 100%;
 }
 
 .day-header {
   text-align: center;
-  font-weight: bold;
-  padding: 0.5rem;
-  background: var(--card-bg);
-  border-radius: 4px;
-  border: 1px solid var(--border-color);
-  color: var(--text-color);
+  font-weight: 600;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.55rem 0.25rem;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid transparent;
+  color: var(--text-secondary);
   width: 100%;
   box-sizing: border-box;
 }
 
 .day {
-  height: 10vh;
+  min-height: clamp(3.5rem, 9vh, 5.5rem);
+  height: auto;
+  aspect-ratio: 1 / 1.05;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   justify-content: flex-start;
   padding: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-sm, 8px);
   cursor: pointer;
   position: relative;
-  transition: background 0.3s ease, transform 0.3s ease, box-shadow 0.3s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   background: var(--card-bg);
   border: 1px solid var(--border-color);
   color: var(--text-color);
@@ -163,88 +193,90 @@ h1 {
 
 .day:hover {
   background: var(--hover-bg);
-  transform: scale(1.02);
-  box-shadow: var(--hover-shadow);
+  border-color: color-mix(in srgb, var(--primary-color) 45%, var(--border-color));
+  transform: none;
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
 }
 
 .day-number {
-  font-weight: bold;
-  margin-bottom: 0.25rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 0.15rem;
   color: var(--text-color);
-  padding: 0.5rem 0.5rem 0.25rem 0.5rem;
+  padding: 0.4rem 0.45rem 0.15rem;
 }
 
 .day.today .day-number {
-  font-size: 1.5rem;
-  font-weight: bold;
-  color: var(--accent-color);
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--primary-contrast, #fff);
+  background: var(--primary-color);
+  border-radius: var(--radius-pill, 999px);
+  min-width: 1.6rem;
+  height: 1.6rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.35rem;
+  margin: 0.3rem 0.35rem 0.1rem;
 }
 
 .day.blue {
   background: var(--day-blue-bg);
   color: var(--day-blue-color);
-  border-color: var(--day-blue-color);
+  border-color: color-mix(in srgb, var(--day-blue-color) 40%, var(--border-color));
 }
 
 .day.amber {
   background: var(--day-amber-bg);
   color: var(--day-amber-color);
-  border-color: var(--day-amber-color);
+  border-color: color-mix(in srgb, var(--day-amber-color) 40%, var(--border-color));
 }
 
 .day.red {
   background: var(--day-red-bg);
   color: var(--day-red-color);
-  border-color: var(--day-red-color);
+  border-color: color-mix(in srgb, var(--day-red-color) 45%, var(--border-color));
 }
 
 .day.other-month {
-  opacity: 0.6;
+  opacity: 0.45;
   background: var(--bg-secondary);
 }
 
 .violation-icon {
   position: absolute;
   top: calc(30% + 12px + 2px);
-  font-size: 1rem;
+  font-size: 0.9rem;
   cursor: pointer;
-  color: #ff0000;
+  color: var(--day-red-color);
 }
 
 .day.selected {
-  box-shadow: 0 0 20px var(--glow-color);
-  animation: breathe 2s infinite;
-  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px var(--primary-color);
+  animation: none;
+  border-color: var(--primary-color);
 }
 
 .day.in-range {
-  border-color: var(--accent-color);
-}
-
-@keyframes breathe {
-  0%, 100% {
-    box-shadow: 0 0 20px var(--glow-color);
-    transform: scale(1);
-  }
-  50% {
-    box-shadow: 0 0 30px var(--glow-color);
-    transform: scale(1.02);
-  }
+  border-color: var(--primary-color);
+  background: color-mix(in srgb, var(--primary-color) 8%, var(--card-bg));
 }
 
 .event-bar {
   position: absolute;
   top: 30%;
-  height: 12px;
-  border-radius: 2px;
-  background: var(--accent-color);
-  box-shadow: 0 0 2px rgba(0, 0, 0, 0.2);
+  height: 10px;
+  border-radius: 3px;
+  background: var(--primary-color);
+  box-shadow: none;
   cursor: pointer;
-  transition: transform 0.2s ease;
+  transition: opacity 0.15s ease;
 }
 
 .event-bar:hover {
-  transform: translateY(-2.4px);
+  transform: none;
+  opacity: 0.85;
 }
 
 .event-bar.duty {
@@ -252,7 +284,7 @@ h1 {
 }
 
 .event-bar.rest {
-  background: #ff69b4; /* Pink for rest, accessible */
+  background: var(--day-amber-color);
   cursor: pointer;
 }
 
@@ -295,14 +327,17 @@ h1 {
 }
 
 .day-details {
-  margin-top: 2rem;
-  padding: 1rem;
+  margin-top: 1.25rem;
+  padding: 1.15rem 1.25rem;
   background: var(--card-bg);
-  border-radius: 8px;
-  box-shadow: var(--hover-shadow);
+  border-radius: var(--radius-md, 12px);
+  box-shadow: var(--shadow-sm, none);
   text-align: center;
   border: 1px solid var(--border-color);
   color: var(--text-color);
+  max-width: 36rem;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .actions {
@@ -318,7 +353,7 @@ h1 {
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(0, 0, 0, 0.7);
+  background: color-mix(in srgb, var(--text-color) 35%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -327,13 +362,13 @@ h1 {
 
 .modal-content {
   background: var(--card-bg);
-  padding: 2rem;
-  border-radius: 8px;
+  padding: 1.5rem 1.35rem;
+  border-radius: var(--radius-lg, 16px);
   max-width: 400px;
-  width: 90%;
+  width: min(90%, 400px);
   text-align: center;
   border: 1px solid var(--border-color);
-  box-shadow: var(--hover-shadow);
+  box-shadow: var(--shadow-md, none);
   color: var(--text-color);
 }
 
@@ -353,8 +388,8 @@ h1 {
   background: var(--card-bg);
   border-left: 1px solid var(--border-color);
   padding: 1.25rem 1.25rem calc(1.5rem + env(safe-area-inset-bottom, 0px));
-  box-shadow: -2px 0 10px rgba(0, 0, 0, 0.3);
-  transition: right 0.3s ease;
+  box-shadow: var(--shadow-md, -8px 0 24px rgba(0, 0, 0, 0.12));
+  transition: right 0.25s ease;
   z-index: 1000;
   box-sizing: border-box;
   overflow-x: hidden;
@@ -447,20 +482,20 @@ h1 {
   padding: 0.7rem 0.75rem;
   margin-top: 0.5rem;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm, 8px);
   background: var(--primary-color);
-  color: #ffffff;
+  color: var(--primary-contrast, #fff);
   cursor: pointer;
   font-size: var(--slide-field-font-size);
   line-height: var(--slide-field-line-height);
   font-family: inherit;
   font-weight: 600;
-  transition: background-color 0.3s, transform 0.2s;
+  transition: background-color 0.15s ease;
 }
 
 .slide-menu button:hover {
   background: var(--primary-hover);
-  transform: translateY(-2px);
+  transform: none;
 }
 
 .slide-menu .time-display {
@@ -528,23 +563,32 @@ input:focus, select:focus {
   color: #c62828;
 }
 
-button {
+.calendar button,
+.day-details button,
+.modal-content button,
+.actions button {
   background: var(--primary-color);
-  color: #ffffff;
+  color: var(--primary-contrast, #fff);
   border: none;
-  padding: 0.5rem 1rem;
-  border-radius: 4px;
+  padding: 0.55rem 1rem;
+  border-radius: var(--radius-sm, 8px);
   cursor: pointer;
-  transition: background-color 0.3s, transform 0.2s;
+  font-weight: 600;
+  transition: background-color 0.15s ease;
 }
 
-button:hover {
+.calendar button:hover,
+.day-details button:hover,
+.modal-content button:hover,
+.actions button:hover {
   background: var(--primary-hover);
-  transform: translateY(-2px);
+  transform: none;
 }
 
-button:disabled {
+.calendar button:disabled,
+.day-details button:disabled {
   background: var(--border-color);
+  color: var(--text-secondary);
   cursor: not-allowed;
   transform: none;
 }
@@ -588,8 +632,8 @@ button:disabled {
 }
 
 .time-zone-option.selected {
-  background: var(--accent-color);
-  color: #ffffff;
+  background: var(--primary-color);
+  color: var(--primary-contrast, #fff);
 }
 
 .compliance-info {
@@ -717,30 +761,6 @@ button:disabled {
 
 .calendar-container {
   position: relative;
-}
-
-.nav-prev,
-.nav-next {
-  background: var(--card-bg);
-  border: none;
-  border-radius: 0;
-  width: 50px;
-  height: 50px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  font-size: 1.8rem;
-  color: var(--text-color);
-  font-family: 'Times New Roman', serif;
-  transition: background-color 0.3s;
-}
-
-
-
-.nav-prev:hover,
-.nav-next:hover {
-  background: var(--hover-bg);
 }
 
 @media (max-width: 768px) {
