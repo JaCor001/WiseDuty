@@ -1,0 +1,63 @@
+.timezone-selector {
+  position: relative;
+  width: 100%;
+  margin-top: 0.3rem;
+}
+
+.timezone-selector-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--card-bg);
+  color: var(--text-color);
+  font-size: 1rem;
+  line-height: 1.35;
+  font-family: inherit;
+}
+
+.timezone-selector-input:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px var(--glow-color);
+}
+
+.timezone-selector-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--card-bg);
+  z-index: 1000;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.12);
+}
+
+.timezone-selector-option {
+  padding: 0.55rem 0.65rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 1rem;
+  line-height: 1.35;
+  color: var(--text-color);
+  background: transparent;
+}
+
+.timezone-selector-option.selected {
+  background: var(--hover-bg);
+}
+
+.timezone-selector-option:hover {
+  background: var(--hover-bg);
+}
+
+.timezone-selector-empty {
+  padding: 0.55rem 0.65rem;
+  color: var(--text-secondary);
+  font-size: 1rem;
+}

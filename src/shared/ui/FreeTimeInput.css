@@ -7,12 +7,14 @@
 .free-time-input-field {
   width: 100%;
   box-sizing: border-box;
-  padding: 0.5rem 2.75rem 0.5rem 0.5rem;
+  padding: 0.55rem 2.75rem 0.55rem 0.65rem;
   border: 1px solid var(--border-color);
   border-radius: 4px;
   background: var(--card-bg);
   color: var(--text-color);
   font-size: 1rem;
+  line-height: 1.35;
+  font-family: inherit;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
   transition: border-color 0.2s, box-shadow 0.2s;
