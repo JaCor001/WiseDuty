@@ -201,7 +201,11 @@ function Landing() {
                 WiseDuty
               </h1>
               <p className="landing-hero-tagline">
-                Invisible duty regs no more. Color-coded clarity for the schedule
+                Invisible <span className="hook-muted">Duty Regs</span> no more.
+                Seamlessly add
+                <span className="pill pill-red"> color</span>-
+                <span className="pill pill-amber"> coded</span>
+                <span className="pill pill-blue"> clarity</span> for the schedule
                 you actually want to fly.
               </p>
               <div className="landing-hero-actions">

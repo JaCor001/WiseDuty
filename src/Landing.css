@@ -246,10 +246,53 @@ html.landing-scroll #root {
 
 .landing-hero-tagline {
   margin: 0 auto 1.75rem;
-  max-width: 32rem;
+  max-width: 36rem;
   font-size: clamp(1.05rem, 2.4vw, 1.2rem);
   line-height: 1.55;
   color: var(--text-secondary);
+}
+
+.landing-hero-tagline .hook-muted {
+  opacity: 0.55;
+  color: var(--text-color);
+  font-weight: 500;
+}
+
+/* Color-coded pills (shared tokens from App.css) */
+.landing-hero-tagline .pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.08rem 0.42rem;
+  margin: 0 0.06rem;
+  border-radius: var(--radius-pill, 999px);
+  font-weight: 650;
+  font-size: 0.95em;
+  line-height: 1.25;
+  border: 1px solid transparent;
+  vertical-align: baseline;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.landing-hero-tagline .pill-red {
+  background: var(--day-red-bg);
+  color: var(--day-red-color);
+  border-color: color-mix(in srgb, var(--day-red-color) 30%, transparent);
+}
+
+.landing-hero-tagline .pill-amber {
+  background: var(--day-rest-bg, var(--day-amber-bg));
+  color: var(--day-rest-color, var(--day-amber-color));
+  border-color: color-mix(
+    in srgb,
+    var(--day-rest-color, var(--day-amber-color)) 30%,
+    transparent
+  );
+}
+
+.landing-hero-tagline .pill-blue {
+  background: var(--day-blue-bg);
+  color: var(--day-blue-color);
+  border-color: color-mix(in srgb, var(--day-blue-color) 30%, transparent);
 }
 
 .landing-hero-actions {
