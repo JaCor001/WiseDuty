@@ -1,12 +1,21 @@
 import type { Regulator, TimeFormat } from '../../domain/types'
 import { useSettings } from '../../features/settings/SettingsContext'
 import TimeZoneSelector from './TimeZoneSelector'
+import './SettingsPanel.css'
 
 interface SettingsPanelProps {
   onClose: () => void
+  /** Optional calendar-only actions (e.g. delete month events). */
+  onDeleteMonthEvents?: () => void
+  /** Label for the month being cleaned, e.g. "March 2026". */
+  deleteMonthLabel?: string
 }
 
-export default function SettingsPanel({ onClose }: SettingsPanelProps) {
+export default function SettingsPanel({
+  onClose,
+  onDeleteMonthEvents,
+  deleteMonthLabel,
+}: SettingsPanelProps) {
   const {
     timeFormat,
     setTimeFormat,
@@ -18,11 +27,25 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     setAcclTZ,
   } = useSettings()
 
+  const handleDeleteMonth = () => {
+    if (!onDeleteMonthEvents) return
+    const label = deleteMonthLabel ? ` in ${deleteMonthLabel}` : ' in the current month'
+    if (
+      confirm(
+        `Are you sure you want to delete all events${label}? This cannot be undone.`,
+      )
+    ) {
+      onDeleteMonthEvents()
+      onClose()
+    }
+  }
+
   return (
-    <div className="slide-menu open">
+    <div className="slide-menu open settings-panel">
       <h3>Settings</h3>
+
       <label>
-        Time Format:{' '}
+        Time Format
         <select
           value={timeFormat}
           onChange={(e) => setTimeFormat(e.target.value as TimeFormat)}
@@ -31,8 +54,9 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
           <option value="12h">12H (AM/PM)</option>
         </select>
       </label>
+
       <label>
-        Regulator:{' '}
+        Regulator
         <select
           value={regulator}
           onChange={(e) => setRegulator(e.target.value as Regulator)}
@@ -43,15 +67,36 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
           <option value="Australia">CASA (Australia)</option>
         </select>
       </label>
+
       <label>
-        Reference Time Zone:{' '}
+        Reference Time Zone
         <TimeZoneSelector value={referenceTZ} onChange={setReferenceTZ} />
       </label>
+
       <label>
-        Acclimatization Time Zone:{' '}
+        Acclimatization Time Zone
         <TimeZoneSelector value={acclTZ} onChange={setAcclTZ} />
       </label>
-      <button type="button" onClick={onClose}>
+
+      {onDeleteMonthEvents && (
+        <section className="settings-danger-zone" aria-label="Calendar data">
+          <h4 className="settings-section-title">Calendar data</h4>
+          <p className="settings-section-hint">
+            Remove every duty and rest event
+            {deleteMonthLabel ? ` in ${deleteMonthLabel}` : ' this month'}.
+          </p>
+          <button
+            type="button"
+            className="settings-danger-button"
+            onClick={handleDeleteMonth}
+          >
+            Delete all events
+            {deleteMonthLabel ? ` (${deleteMonthLabel})` : ''}
+          </button>
+        </section>
+      )}
+
+      <button type="button" className="settings-close-button" onClick={onClose}>
         Close
       </button>
     </div>

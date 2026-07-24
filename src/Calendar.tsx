@@ -42,7 +42,7 @@ import FreeTimeInput from './shared/ui/FreeTimeInput'
 import SettingsPanel from './shared/ui/SettingsPanel'
 import TimeZoneSelector from './shared/ui/TimeZoneSelector'
 import ThemeToggle from './shared/ui/ThemeToggle'
-import { IconMenu, IconSettings } from './shared/ui/icons'
+import { IconSettings } from './shared/ui/icons'
 
 function Calendar() {
   const {
@@ -75,7 +75,6 @@ function Calendar() {
   const [animating, setAnimating] = useState(false)
   const [showRestDetails, setShowRestDetails] = useState(false)
   const [selectedRest, setSelectedRest] = useState<DutyEvent | null>(null)
-  const [showHamburgerMenu, setShowHamburgerMenu] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [maxDutyResult, setMaxDutyResult] = useState('')
   const [validationMessage, setValidationMessage] = useState('')
@@ -602,14 +601,6 @@ function Calendar() {
               >
                 <IconSettings />
               </button>
-              <button
-                type="button"
-                className="settings-button"
-                aria-label="Menu"
-                onClick={() => setShowHamburgerMenu(true)}
-              >
-                <IconMenu />
-              </button>
               <ThemeToggle />
             </div>
           </div>
@@ -949,7 +940,32 @@ function Calendar() {
             </div>
           )}
 
-          {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+          {showSettings && (
+            <SettingsPanel
+              onClose={() => setShowSettings(false)}
+              deleteMonthLabel={currentDate.toLocaleDateString('en-US', {
+                month: 'long',
+                year: 'numeric',
+              })}
+              onDeleteMonthEvents={() => {
+                const monthStart = new Date(
+                  currentDate.getFullYear(),
+                  currentDate.getMonth(),
+                  1,
+                )
+                const monthEnd = new Date(
+                  currentDate.getFullYear(),
+                  currentDate.getMonth() + 1,
+                  1,
+                )
+                setEvents((prev) =>
+                  prev.filter(
+                    (e) => e.start < monthStart || e.start >= monthEnd,
+                  ),
+                )
+              }}
+            />
+          )}
         </div>
       </div>
       {showRestDetails && selectedRest && (
@@ -1000,48 +1016,6 @@ function Calendar() {
                 OK
               </button>
             </div>
-          </div>
-        </div>
-      )}
-      {showHamburgerMenu && (
-        <div
-          className="modal-overlay"
-          onClick={() => setShowHamburgerMenu(false)}
-        >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Menu</h3>
-            <button
-              type="button"
-              onClick={() => {
-                const monthStart = new Date(
-                  currentDate.getFullYear(),
-                  currentDate.getMonth(),
-                  1,
-                )
-                const monthEnd = new Date(
-                  currentDate.getFullYear(),
-                  currentDate.getMonth() + 1,
-                  1,
-                )
-                if (
-                  confirm(
-                    'Are you sure you want to delete all events in the current month?',
-                  )
-                ) {
-                  setEvents((prev) =>
-                    prev.filter(
-                      (e) => e.start < monthStart || e.start >= monthEnd,
-                    ),
-                  )
-                  setShowHamburgerMenu(false)
-                }
-              }}
-            >
-              Delete all events
-            </button>
-            <button type="button" onClick={() => setShowHamburgerMenu(false)}>
-              Close
-            </button>
           </div>
         </div>
       )}

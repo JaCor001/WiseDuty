@@ -1,0 +1,40 @@
+.settings-panel .settings-section-title {
+  margin: 1.25rem 0 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.settings-panel .settings-section-hint {
+  margin: 0 0 0.55rem;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.settings-panel .settings-danger-zone {
+  margin-top: 0.5rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--border-color);
+  text-align: left;
+}
+
+.settings-panel .settings-danger-button {
+  background: transparent !important;
+  color: var(--day-red-color) !important;
+  border: 1px solid color-mix(in srgb, var(--day-red-color) 45%, var(--border-color)) !important;
+  font-weight: 600;
+}
+
+.settings-panel .settings-danger-button:hover {
+  background: var(--day-red-bg) !important;
+  color: var(--day-red-color) !important;
+  transform: none !important;
+}
+
+.settings-panel .settings-close-button {
+  margin-top: 1rem;
+}
