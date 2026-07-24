@@ -4,10 +4,12 @@
 
 /* Allow document scrolling on the landing route */
 html.landing-scroll,
-body.landing-scroll {
+body.landing-scroll,
+html.landing-scroll #root {
   height: auto !important;
+  max-height: none !important;
   min-height: 100%;
-  overflow-x: hidden;
+  overflow-x: clip;
   overflow-y: auto !important;
 }
 
@@ -39,7 +41,9 @@ body.landing-scroll {
     var(--bg-primary);
 }
 
-.landing-presentation > *:not(.landing-ambient) {
+/* Content stacks above ambient art — never force position on the fixed header */
+.landing-presentation > main,
+.landing-presentation > footer {
   position: relative;
   z-index: 1;
 }
@@ -47,11 +51,12 @@ body.landing-scroll {
 /* ---------- Fixed header: becomes the brand after hero logo scrolls away ---------- */
 
 .landing-fixed-header {
-  position: fixed;
+  /* Must stay fixed — do not let parent rules set position: relative on this node */
+  position: fixed !important;
   top: 0;
   left: 0;
   right: 0;
-  z-index: 100;
+  z-index: 1000;
   padding: 0.55rem var(--page-pad, 1.25rem);
   pointer-events: none; /* tools re-enable below */
   transition: background-color 0.25s ease, border-color 0.25s ease,

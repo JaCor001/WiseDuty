@@ -111,26 +111,24 @@ function Landing() {
     }
   }, [])
 
-  // When the large hero logo leaves the top of the viewport, pin brand + CTA
+  // Pin brand + Get Started once the hero logo crosses above the viewport top
   useEffect(() => {
-    const logo = heroLogoRef.current
-    if (!logo) return
+    const updatePin = () => {
+      const logo = heroLogoRef.current
+      if (!logo) return
+      const top = logo.getBoundingClientRect().top
+      // When the large logo reaches / passes the top, it “becomes” the fixed header
+      setLogoPinned(top <= 16)
+    }
 
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        // Pin header when logo is not intersecting the top band of the screen
-        setLogoPinned(!entry.isIntersecting)
-      },
-      {
-        // Trigger slightly before the logo fully leaves under a typical header height
-        root: null,
-        threshold: 0,
-        rootMargin: '-12px 0px 0px 0px',
-      },
-    )
-
-    observer.observe(logo)
-    return () => observer.disconnect()
+    updatePin()
+    // capture: true so nested scroll containers still update the pin state
+    window.addEventListener('scroll', updatePin, { passive: true, capture: true })
+    window.addEventListener('resize', updatePin)
+    return () => {
+      window.removeEventListener('scroll', updatePin, true)
+      window.removeEventListener('resize', updatePin)
+    }
   }, [])
 
   const scrollToFeatures = () => {
