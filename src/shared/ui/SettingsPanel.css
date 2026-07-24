@@ -35,6 +35,49 @@
   transform: none !important;
 }
 
+.settings-panel .settings-delete-options {
+  display: grid;
+  gap: 0.45rem;
+  margin-bottom: 0.35rem;
+}
+
+.settings-panel .settings-delete-prompt {
+  margin-bottom: 0.15rem;
+}
+
+.settings-panel .settings-secondary-button {
+  background: var(--bg-secondary) !important;
+  color: var(--text-color) !important;
+  border: 1px solid var(--border-color) !important;
+  font-weight: 500;
+}
+
+.settings-panel .settings-secondary-button:hover {
+  background: var(--hover-bg) !important;
+  transform: none !important;
+}
+
+.settings-panel .settings-restore-button {
+  margin-top: 0.55rem;
+  background: transparent !important;
+  color: var(--primary-color) !important;
+  border: 1px solid color-mix(in srgb, var(--primary-color) 40%, var(--border-color)) !important;
+  font-weight: 600;
+}
+
+.settings-panel .settings-restore-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary-color) 10%, var(--card-bg)) !important;
+  transform: none !important;
+}
+
+.settings-panel .settings-restore-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  color: var(--text-secondary) !important;
+  border-color: var(--border-color) !important;
+  background: var(--bg-secondary) !important;
+}
+
 .settings-panel .settings-close-button {
   margin-top: 1rem;
 }

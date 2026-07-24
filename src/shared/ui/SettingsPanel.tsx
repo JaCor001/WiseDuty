@@ -1,20 +1,28 @@
+import { useState } from 'react'
 import type { Regulator, TimeFormat } from '../../domain/types'
 import { useSettings } from '../../features/settings/SettingsContext'
 import TimeZoneSelector from './TimeZoneSelector'
 import './SettingsPanel.css'
 
+export type DeleteEventsScope = 'month' | 'all'
+
 interface SettingsPanelProps {
   onClose: () => void
-  /** Optional calendar-only actions (e.g. delete month events). */
-  onDeleteMonthEvents?: () => void
-  /** Label for the month being cleaned, e.g. "March 2026". */
+  /** When provided, shows calendar data delete/restore controls. */
+  onDeleteEvents?: (scope: DeleteEventsScope) => void
+  onRestoreDeletedEvents?: () => void
+  /** Label for the current month, e.g. "March 2026". */
   deleteMonthLabel?: string
+  /** Number of events in soft-delete storage (enables restore). */
+  deletedEventCount?: number
 }
 
 export default function SettingsPanel({
   onClose,
-  onDeleteMonthEvents,
+  onDeleteEvents,
+  onRestoreDeletedEvents,
   deleteMonthLabel,
+  deletedEventCount = 0,
 }: SettingsPanelProps) {
   const {
     timeFormat,
@@ -27,17 +35,39 @@ export default function SettingsPanel({
     setAcclTZ,
   } = useSettings()
 
-  const handleDeleteMonth = () => {
-    if (!onDeleteMonthEvents) return
-    const label = deleteMonthLabel ? ` in ${deleteMonthLabel}` : ' in the current month'
+  const [showDeleteOptions, setShowDeleteOptions] = useState(false)
+  const canRestore = deletedEventCount > 0 && Boolean(onRestoreDeletedEvents)
+  const showCalendarData = Boolean(onDeleteEvents)
+
+  const handleDelete = (scope: DeleteEventsScope) => {
+    if (!onDeleteEvents) return
+    const scopeLabel =
+      scope === 'month'
+        ? deleteMonthLabel
+          ? `all events in ${deleteMonthLabel}`
+          : 'all events in the current month'
+        : 'ALL events on your calendar'
     if (
-      confirm(
-        `Are you sure you want to delete all events${label}? This cannot be undone.`,
+      !confirm(
+        `Delete ${scopeLabel}? You can restore them later from Settings.`,
       )
     ) {
-      onDeleteMonthEvents()
-      onClose()
+      return
     }
+    onDeleteEvents(scope)
+    setShowDeleteOptions(false)
+  }
+
+  const handleRestore = () => {
+    if (!canRestore || !onRestoreDeletedEvents) return
+    if (
+      !confirm(
+        `Restore ${deletedEventCount} deleted event${deletedEventCount === 1 ? '' : 's'}?`,
+      )
+    ) {
+      return
+    }
+    onRestoreDeletedEvents()
   }
 
   return (
@@ -78,20 +108,66 @@ export default function SettingsPanel({
         <TimeZoneSelector value={acclTZ} onChange={setAcclTZ} />
       </label>
 
-      {onDeleteMonthEvents && (
+      {showCalendarData && (
         <section className="settings-danger-zone" aria-label="Calendar data">
           <h4 className="settings-section-title">Calendar data</h4>
           <p className="settings-section-hint">
-            Remove every duty and rest event
-            {deleteMonthLabel ? ` in ${deleteMonthLabel}` : ' this month'}.
+            Soft-delete events (they can be restored below until you delete
+            again or restore).
           </p>
+
+          {!showDeleteOptions ? (
+            <button
+              type="button"
+              className="settings-danger-button"
+              onClick={() => setShowDeleteOptions(true)}
+            >
+              Delete events…
+            </button>
+          ) : (
+            <div className="settings-delete-options" role="group" aria-label="Delete scope">
+              <p className="settings-section-hint settings-delete-prompt">
+                Choose what to delete:
+              </p>
+              <button
+                type="button"
+                className="settings-danger-button"
+                onClick={() => handleDelete('month')}
+              >
+                Current month
+                {deleteMonthLabel ? ` (${deleteMonthLabel})` : ''}
+              </button>
+              <button
+                type="button"
+                className="settings-danger-button"
+                onClick={() => handleDelete('all')}
+              >
+                All events
+              </button>
+              <button
+                type="button"
+                className="settings-secondary-button"
+                onClick={() => setShowDeleteOptions(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
           <button
             type="button"
-            className="settings-danger-button"
-            onClick={handleDeleteMonth}
+            className="settings-restore-button"
+            disabled={!canRestore}
+            aria-disabled={!canRestore}
+            title={
+              canRestore
+                ? `Restore ${deletedEventCount} deleted event${deletedEventCount === 1 ? '' : 's'}`
+                : 'No deleted events to restore'
+            }
+            onClick={handleRestore}
           >
-            Delete all events
-            {deleteMonthLabel ? ` (${deleteMonthLabel})` : ''}
+            Restore deleted events
+            {canRestore ? ` (${deletedEventCount})` : ''}
           </button>
         </section>
       )}

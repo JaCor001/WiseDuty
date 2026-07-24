@@ -37,7 +37,13 @@ import {
 } from './domain/time'
 import { useSettings } from './features/settings/SettingsContext'
 import { scheduleTravelRestReminders } from './shared/notifications'
-import { loadEvents, saveEvents } from './shared/storage'
+import {
+  loadDeletedEvents,
+  loadEvents,
+  restoreDeletedEvents,
+  saveEvents,
+  softDeleteEvents,
+} from './shared/storage'
 import FreeTimeInput from './shared/ui/FreeTimeInput'
 import SettingsPanel from './shared/ui/SettingsPanel'
 import TimeZoneSelector from './shared/ui/TimeZoneSelector'
@@ -59,6 +65,9 @@ function Calendar() {
   const [currentDate, setCurrentDate] = useState(() => new Date())
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [events, setEvents] = useState<DutyEvent[]>(() => loadEvents())
+  const [deletedEventCount, setDeletedEventCount] = useState(
+    () => loadDeletedEvents().length,
+  )
   const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skipNextPersist = useRef(true)
   const [showMenu, setShowMenu] = useState(false)
@@ -947,22 +956,38 @@ function Calendar() {
                 month: 'long',
                 year: 'numeric',
               })}
-              onDeleteMonthEvents={() => {
-                const monthStart = new Date(
-                  currentDate.getFullYear(),
-                  currentDate.getMonth(),
-                  1,
-                )
-                const monthEnd = new Date(
-                  currentDate.getFullYear(),
-                  currentDate.getMonth() + 1,
-                  1,
-                )
-                setEvents((prev) =>
-                  prev.filter(
-                    (e) => e.start < monthStart || e.start >= monthEnd,
-                  ),
-                )
+              deletedEventCount={deletedEventCount}
+              onDeleteEvents={(scope) => {
+                setEvents((prev) => {
+                  if (scope === 'all') {
+                    const result = softDeleteEvents(prev, () => true)
+                    setDeletedEventCount(result.deleted.length)
+                    return result.active
+                  }
+                  const monthStart = new Date(
+                    currentDate.getFullYear(),
+                    currentDate.getMonth(),
+                    1,
+                  )
+                  const monthEnd = new Date(
+                    currentDate.getFullYear(),
+                    currentDate.getMonth() + 1,
+                    1,
+                  )
+                  const result = softDeleteEvents(
+                    prev,
+                    (e) => e.start >= monthStart && e.start < monthEnd,
+                  )
+                  setDeletedEventCount(result.deleted.length)
+                  return result.active
+                })
+              }}
+              onRestoreDeletedEvents={() => {
+                setEvents((prev) => {
+                  const result = restoreDeletedEvents(prev)
+                  setDeletedEventCount(0)
+                  return result.active
+                })
               }}
             />
           )}

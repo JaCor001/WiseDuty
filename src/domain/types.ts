@@ -39,6 +39,8 @@ export interface AppSettings {
 
 export const STORAGE_KEYS = {
   events: 'wiseduty.events.v1',
+  /** Soft-deleted events held for undo / restore */
+  deletedEvents: 'wiseduty.events.deleted.v1',
   theme: 'theme',
   timeFormat: 'timeFormat',
   regulator: 'regulator',
