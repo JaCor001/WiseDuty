@@ -583,25 +583,36 @@ function Calendar() {
           <div className="backdrop-overlay" />
         </div>
         <header className="site-header calendar-header">
-          <div className="nav-container" style={{ width: '100%' }}>
+          <div className="nav-container">
             <Link to="/" className="logo-placeholder">
               (LOGO)
             </Link>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-              <h2 style={{ margin: 0 }}>Calendar</h2>
+            <div className="header-center">
+              <h2 className="header-title">Calendar</h2>
               <Link to="/signup">Signup</Link>
               <Link to="/login">Login</Link>
             </div>
             <div className="header-buttons">
-              <button type="button" onClick={() => setShowSettings(true)}>
+              <button
+                type="button"
+                className="settings-button"
+                aria-label="Settings"
+                onClick={() => setShowSettings(true)}
+              >
                 ⚙️
               </button>
-              <button type="button" onClick={() => setShowHamburgerMenu(true)}>
+              <button
+                type="button"
+                className="settings-button"
+                aria-label="Menu"
+                onClick={() => setShowHamburgerMenu(true)}
+              >
                 ☰
               </button>
               <button
                 type="button"
                 className="theme-toggle"
+                aria-label="Toggle theme"
                 onClick={toggleDarkMode}
               >
                 {darkMode ? '☀️' : '🌙'}
@@ -611,19 +622,12 @@ function Calendar() {
         </header>
         <div className="calendar-page-container">
           <div className="month-header">
-            <h1
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                margin: 0,
-              }}
-            >
+            <h1 className="month-title">
               {currentDate > minMonth && (
                 <button
                   type="button"
                   className="nav-prev"
-                  style={{ marginRight: '1rem' }}
+                  aria-label="Previous month"
                   onClick={() => {
                     const newDate = new Date(
                       currentDate.getFullYear(),
@@ -640,13 +644,7 @@ function Calendar() {
                   &#x00AB;
                 </button>
               )}
-              <span
-                style={{
-                  minWidth: '10rem',
-                  textAlign: 'center',
-                  display: 'inline-block',
-                }}
-              >
+              <span className="month-label">
                 {currentDate.toLocaleDateString('en-US', {
                   month: 'long',
                   year: 'numeric',
@@ -656,7 +654,7 @@ function Calendar() {
                 <button
                   type="button"
                   className="nav-next"
-                  style={{ marginLeft: '1rem' }}
+                  aria-label="Next month"
                   onClick={() => {
                     const newDate = new Date(
                       currentDate.getFullYear(),

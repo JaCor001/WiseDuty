@@ -28,10 +28,12 @@ function Login() {
           <Link to="/" className="logo-placeholder">
             (LOGO)
           </Link>
-          <nav>
+          <nav className="header-center">
             <Link to="/calendar">Calendar</Link>
             <Link to="/signup">Signup</Link>
             <Link to="/">Home</Link>
+          </nav>
+          <div className="header-actions">
             <button
               className="theme-toggle"
               aria-label="Toggle dark mode"
@@ -40,7 +42,7 @@ function Login() {
             >
               {darkMode ? '☀️' : '🌙'}
             </button>
-          </nav>
+          </div>
         </div>
       </header>
 

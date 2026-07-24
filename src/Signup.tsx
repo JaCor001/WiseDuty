@@ -37,10 +37,12 @@ function Signup() {
           <Link to="/" className="logo-placeholder">
             (LOGO)
           </Link>
-          <nav>
+          <nav className="header-center">
             <Link to="/calendar">Calendar</Link>
             <Link to="/login">Login</Link>
             <Link to="/">Home</Link>
+          </nav>
+          <div className="header-actions">
             <button
               className="theme-toggle"
               aria-label="Toggle dark mode"
@@ -49,7 +51,7 @@ function Signup() {
             >
               {darkMode ? '☀️' : '🌙'}
             </button>
-          </nav>
+          </div>
         </div>
       </header>
 

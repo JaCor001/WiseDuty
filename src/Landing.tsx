@@ -23,12 +23,15 @@ function Landing() {
             <Link to="/" className="logo-placeholder">
               (LOGO)
             </Link>
-            <nav>
+            <nav className="header-center">
               <Link to="/calendar">Calendar</Link>
               <Link to="/login">Login</Link>
+            </nav>
+            <div className="header-actions">
               <button
                 type="button"
                 className="settings-button"
+                aria-label="Settings"
                 onClick={() => setShowSettings(true)}
               >
                 ⚙️
@@ -36,11 +39,12 @@ function Landing() {
               <button
                 type="button"
                 className="theme-toggle"
+                aria-label="Toggle theme"
                 onClick={toggleDarkMode}
               >
                 {darkMode ? '☀️' : '🌙'}
               </button>
-            </nav>
+            </div>
           </div>
         </header>
 
