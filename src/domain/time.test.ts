@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   combineLocalDateAndTime,
+  dayBarPosition,
+  formatHHmm,
   getHourInTZ,
   parseLocalDateTime,
   toLocalDateInputValue,
@@ -23,6 +25,21 @@ describe('combineLocalDateAndTime / parseLocalDateTime', () => {
 
     const parsed = parseLocalDateTime('2024-01-10', '14:30')
     expect(parsed.getTime()).toBe(combined.getTime())
+  })
+})
+
+describe('dayBarPosition / formatHHmm', () => {
+  it('formats local HH:mm and positions same-day bars', () => {
+    const d = new Date(2024, 0, 10, 9, 5)
+    expect(formatHHmm(d)).toBe('09:05')
+
+    const dayStart = new Date(2024, 0, 10)
+    const dayEnd = new Date(2024, 0, 11)
+    const start = new Date(2024, 0, 10, 6, 0)
+    const end = new Date(2024, 0, 10, 12, 0)
+    const pos = dayBarPosition(start, end, dayStart, dayEnd)
+    expect(pos.left).toBeCloseTo((6 / 24) * 100, 5)
+    expect(pos.width).toBeCloseTo((6 / 24) * 100, 5)
   })
 })
 

@@ -74,17 +74,16 @@ describe('weekly duty window', () => {
     expect(hours).toBe(4 + 8)
   })
 
-  it('detects weekly limit breach', () => {
+  it('detects weekly limit breach against rolling window ending at duty end', () => {
     const start = new Date('2024-06-15T08:00:00')
     const end = new Date('2024-06-15T18:00:00') // 10h
     const prior: DutyEvent[] = [
       mk(
         'p',
         new Date('2024-06-14T00:00:00'),
-        new Date('2024-06-14T12:00:00'), // 12h — wait need 55+ for breach with 10
+        new Date('2024-06-14T12:00:00'),
       ),
     ]
-    // Build enough prior hours
     const heavy: DutyEvent[] = []
     for (let i = 0; i < 6; i++) {
       heavy.push(

@@ -193,15 +193,25 @@ export function getWeeklyDutyHours(
     }, 0)
 }
 
+/**
+ * True if adding [start, end] would push the rolling 168h window ending at `end`
+ * over the weekly limit (partial overlaps counted).
+ */
 export function wouldExceedWeeklyLimit(
   events: DutyEvent[],
   start: Date,
   end: Date,
   excludeEventId?: string,
 ): boolean {
-  const duration = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
-  const prior = getWeeklyDutyHours(events, start, excludeEventId)
-  return prior + duration > MAX_WEEKLY_DUTY_HOURS
+  const windowStart = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000)
+  const prior = getWeeklyDutyHours(events, end, excludeEventId)
+  const overlapStart = Math.max(start.getTime(), windowStart.getTime())
+  const overlapEnd = Math.min(end.getTime(), end.getTime())
+  const newHours =
+    overlapEnd > overlapStart
+      ? (overlapEnd - overlapStart) / (1000 * 60 * 60)
+      : 0
+  return prior + newHours > MAX_WEEKLY_DUTY_HOURS
 }
 
 export function getNightWindow(regulator: Regulator): {

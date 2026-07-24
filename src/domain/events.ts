@@ -46,12 +46,29 @@ export function restIdForDuty(dutyId: string): string {
   return `${dutyId}-rest`
 }
 
+export function findDutiesOnDate(events: DutyEvent[], date: Date): DutyEvent[] {
+  const key = date.toDateString()
+  return events.filter(
+    (e) => e.type === 'duty' && e.start.toDateString() === key,
+  )
+}
+
+/** First duty that starts on this local calendar day (legacy single-duty UI). */
 export function findDutyOnDate(
   events: DutyEvent[],
   date: Date,
 ): DutyEvent | undefined {
-  const key = date.toDateString()
-  return events.find((e) => e.type === 'duty' && e.start.toDateString() === key)
+  return findDutiesOnDate(events, date)[0]
+}
+
+export function eventsOnLocalDay(
+  events: DutyEvent[],
+  date: Date,
+): DutyEvent[] {
+  const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  const dayEnd = new Date(dayStart)
+  dayEnd.setDate(dayEnd.getDate() + 1)
+  return events.filter((e) => e.start < dayEnd && e.end > dayStart)
 }
 
 export function removeDutyAndRelated(
@@ -114,14 +131,6 @@ export function maybeBuildLnrBetween(
       eventsOverlap(result.start, result.end, e.start, e.end),
   )
   if (overlapsDuty) violated = true
-
-  // Also flag if LNR overlaps previous/next duty body (should not if end/start are exclusive edges)
-  if (
-    eventsOverlap(result.start, result.end, previous.start, previous.end) ||
-    eventsOverlap(result.start, result.end, next.start, next.end)
-  ) {
-    // Touching at endpoint is ok: [prev.end, next.start] — eventsOverlap uses <= so equal edges don't count
-  }
 
   return {
     id: createId('-lnr'),

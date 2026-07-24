@@ -119,3 +119,54 @@ export function addDays(date: Date, days: number): Date {
   d.setDate(d.getDate() + days)
   return d
 }
+
+/** HH:mm from a Date's local wall-clock components. */
+export function formatHHmm(date: Date): string {
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+/** Fraction of a local day [0, 24) for positioning on a day grid. */
+export function localTimeOfDayHours(date: Date): number {
+  return date.getHours() + date.getMinutes() / 60 + date.getSeconds() / 3600
+}
+
+/**
+ * Position a bar within a local calendar day.
+ * Returns left/width as percentages of the day cell.
+ */
+export function dayBarPosition(
+  eventStart: Date,
+  eventEnd: Date,
+  dayStart: Date,
+  dayEnd: Date,
+): { left: number; width: number } {
+  const isStart = eventStart >= dayStart && eventStart < dayEnd
+  const isEnd = eventEnd > dayStart && eventEnd <= dayEnd
+  let left = 0
+  let width = 100
+
+  if (isStart && !isEnd) {
+    left = (localTimeOfDayHours(eventStart) / 24) * 100
+    width = 100 - left
+  } else if (isEnd && !isStart) {
+    const endHours =
+      eventEnd.getTime() === dayStart.getTime()
+        ? 0
+        : eventEnd.getTime() === dayEnd.getTime()
+          ? 24
+          : localTimeOfDayHours(eventEnd) || 24
+    width = (endHours / 24) * 100
+  } else if (isStart && isEnd) {
+    const startH = localTimeOfDayHours(eventStart)
+    let endH = localTimeOfDayHours(eventEnd)
+    if (eventEnd.getTime() === dayEnd.getTime()) endH = 24
+    if (endH === 0 && eventEnd > eventStart) endH = 24
+    left = (startH / 24) * 100
+    width = ((endH - startH) / 24) * 100
+  }
+
+  return {
+    left: Math.max(0, Math.min(100, left)),
+    width: Math.max(0, Math.min(100 - left, width)),
+  }
+}
