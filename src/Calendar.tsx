@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import './Calendar.css'
 import './App.css'
@@ -7,7 +7,9 @@ import { MAX_WEEKLY_DUTY_HOURS } from './domain/types'
 import {
   buildRestEvent,
   createId,
+  eventsOnLocalDay,
   findDutyOnDate,
+  findDutiesOnDate,
   findNextDuty,
   findPreviousDuty,
   maybeBuildLnrBetween,
@@ -24,6 +26,8 @@ import {
 } from './domain/regulations'
 import {
   combineLocalDateAndTime,
+  dayBarPosition,
+  formatHHmm,
   formatTimeDisplay,
   getHourInTZ,
   getZuluTimeDisplay,
@@ -53,9 +57,8 @@ function Calendar() {
   const [currentDate, setCurrentDate] = useState(() => new Date())
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [events, setEvents] = useState<DutyEvent[]>(() => loadEvents())
-  const [pressTimer, setPressTimer] = useState<ReturnType<
-    typeof setTimeout
-  > | null>(null)
+  const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const skipNextPersist = useRef(true)
   const [showMenu, setShowMenu] = useState(false)
   const [menuDate, setMenuDate] = useState<Date | null>(null)
   const [showAddDuty, setShowAddDuty] = useState(false)
@@ -76,12 +79,29 @@ function Calendar() {
   const [validationMessage, setValidationMessage] = useState('')
 
   useEffect(() => {
+    // Avoid rewriting localStorage on mount with an identical payload
+    if (skipNextPersist.current) {
+      skipNextPersist.current = false
+      return
+    }
     saveEvents(events)
   }, [events])
 
-  const now = new Date()
-  const minMonth = new Date(now.getFullYear(), now.getMonth() - 13, 1)
-  const maxMonth = new Date(now.getFullYear(), now.getMonth() + 3, 1)
+  useEffect(() => {
+    return () => {
+      if (pressTimerRef.current) clearTimeout(pressTimerRef.current)
+    }
+  }, [])
+
+  const now = useMemo(() => new Date(), [])
+  const minMonth = useMemo(
+    () => new Date(now.getFullYear(), now.getMonth() - 13, 1),
+    [now],
+  )
+  const maxMonth = useMemo(
+    () => new Date(now.getFullYear(), now.getMonth() + 3, 1),
+    [now],
+  )
 
   const getCalendarDays = (date: Date) => {
     const year = date.getFullYear()
@@ -102,12 +122,7 @@ function Calendar() {
   }
 
   const getDayStatus = (date: Date) => {
-    const dayStart = startOfLocalDay(date)
-    const dayEnd = new Date(dayStart)
-    dayEnd.setDate(dayEnd.getDate() + 1)
-    const dayEvents = events.filter(
-      (event) => event.start < dayEnd && event.end > dayStart,
-    )
+    const dayEvents = eventsOnLocalDay(events, date)
     if (dayEvents.some((e) => e.violated)) return 'red'
     if (dayEvents.some((e) => e.type === 'duty')) return 'blue'
     if (dayEvents.some((e) => e.type === 'rest')) return 'amber'
@@ -118,9 +133,7 @@ function Calendar() {
     const dayStart = startOfLocalDay(date)
     const dayEnd = new Date(dayStart)
     dayEnd.setDate(dayEnd.getDate() + 1)
-    const dayEvents = events.filter(
-      (event) => event.start < dayEnd && event.end > dayStart,
-    )
+    const dayEvents = eventsOnLocalDay(events, date)
     const allBars: ReactNode[] = []
     const allMarkers: { type: string; eventId: string }[] = []
 
@@ -130,8 +143,8 @@ function Calendar() {
         const overlappingRest = dayEvents.find(
           (e) =>
             e.type === 'rest' &&
-            e !== event &&
-            !(e.end <= event.start || e.start >= event.end),
+            e.id !== event.id &&
+            eventsOverlap(e.start, e.end, event.start, event.end),
         )
         if (overlappingRest) {
           const thisDuration = event.end.getTime() - event.start.getTime()
@@ -143,25 +156,12 @@ function Calendar() {
 
       const isStart = event.start >= dayStart && event.start < dayEnd
       const isEnd = event.end > dayStart && event.end <= dayEnd
-      let left = 0
-      let width = 100
-      if (isStart && !isEnd) {
-        left = (event.start.getHours() / 24) * 100
-        width = 100 - left
-      } else if (isEnd && !isStart) {
-        const effectiveEndHour =
-          event.end.getHours() === 0 && event.end.getMinutes() === 0
-            ? 24
-            : event.end.getHours() + event.end.getMinutes() / 60
-        width = (effectiveEndHour / 24) * 100
-      } else if (isStart && isEnd) {
-        left =
-          ((event.start.getHours() + event.start.getMinutes() / 60) / 24) * 100
-        const endFrac =
-          event.end.getHours() + event.end.getMinutes() / 60 ||
-          (event.end.getTime() === dayEnd.getTime() ? 24 : 0)
-        width = ((endFrac - (event.start.getHours() + event.start.getMinutes() / 60)) / 24) * 100
-      }
+      const { left, width } = dayBarPosition(
+        event.start,
+        event.end,
+        dayStart,
+        dayEnd,
+      )
 
       const markers = getDutyMarkers(
         event,
@@ -174,23 +174,24 @@ function Calendar() {
         allMarkers.push({ type: marker, eventId: event.id }),
       )
 
+      // Key includes day so multi-day events don't collide across cells
       allBars.push(
         <div
-          key={event.id}
+          key={`${event.id}-${dayStart.toISOString()}`}
           className={`event-bar ${event.type}`}
           style={{ left: `${left}%`, width: `${width}%`, top: barTop }}
           title={event.title}
-          onClick={
-            event.type === 'duty'
-              ? () =>
-                  alert(
-                    `${event.title}\nType: ${event.type}\nStart: ${event.start.toLocaleString()}\nEnd: ${event.end.toLocaleString()}`,
-                  )
-              : () => {
-                  setSelectedRest(event)
-                  setShowRestDetails(true)
-                }
-          }
+          onClick={(e) => {
+            e.stopPropagation()
+            if (event.type === 'duty') {
+              alert(
+                `${event.title}\nType: ${event.type}\nStart: ${event.start.toLocaleString()}\nEnd: ${event.end.toLocaleString()}`,
+              )
+            } else {
+              setSelectedRest(event)
+              setShowRestDetails(true)
+            }
+          }}
         />,
       )
     })
@@ -199,7 +200,7 @@ function Calendar() {
       const isLNR = marker.type === 'LNR'
       return (
         <span
-          key={`${marker.eventId}-${marker.type}-${index}`}
+          key={`${marker.eventId}-${marker.type}-${dayStart.toISOString()}-${index}`}
           className={`marker ${marker.type}`}
           style={
             isLNR
@@ -220,25 +221,27 @@ function Calendar() {
   }
 
   const getDayActions = (date: Date) => {
-    const hasDuty = !!findDutyOnDate(events, date)
-    return hasDuty
-      ? ['Edit Duty', 'Delete Duty', 'Required Rest']
-      : ['Add Duty', 'Required Rest']
+    const duties = findDutiesOnDate(events, date)
+    if (duties.length > 0) {
+      return ['Edit Duty', 'Delete Duty', 'Required Rest']
+    }
+    return ['Add Duty', 'Required Rest']
   }
 
   const handleMouseDown = (date: Date) => {
-    const timer = setTimeout(() => {
+    if (pressTimerRef.current) clearTimeout(pressTimerRef.current)
+    pressTimerRef.current = setTimeout(() => {
       setSelectedDate(date)
       setShowMenu(true)
       setMenuDate(date)
+      pressTimerRef.current = null
     }, 500)
-    setPressTimer(timer)
   }
 
   const handleMouseUp = () => {
-    if (pressTimer) {
-      clearTimeout(pressTimer)
-      setPressTimer(null)
+    if (pressTimerRef.current) {
+      clearTimeout(pressTimerRef.current)
+      pressTimerRef.current = null
     }
   }
 
@@ -253,13 +256,9 @@ function Calendar() {
       if (duty) {
         setSelectedDate(date)
         setEditEvent(duty)
-        setStartTime(
-          `${String(duty.start.getHours()).padStart(2, '0')}:${String(duty.start.getMinutes()).padStart(2, '0')}`,
-        )
+        setStartTime(formatHHmm(duty.start))
         setEndDate(toLocalDateInputValue(duty.end))
-        setEndTime(
-          `${String(duty.end.getHours()).padStart(2, '0')}:${String(duty.end.getMinutes()).padStart(2, '0')}`,
-        )
+        setEndTime(formatHHmm(duty.end))
         setModalAcclTZ(duty.acclTZ || acclTZ)
       }
     } else if (date.getMonth() !== currentDate.getMonth()) {
@@ -300,13 +299,9 @@ function Calendar() {
     setIsEdit(true)
     setEditEvent(event)
     setAddDutyDate(selectedDate)
-    setStartTime(
-      `${String(event.start.getHours()).padStart(2, '0')}:${String(event.start.getMinutes()).padStart(2, '0')}`,
-    )
+    setStartTime(formatHHmm(event.start))
     setEndDate(toLocalDateInputValue(event.end))
-    setEndTime(
-      `${String(event.end.getHours()).padStart(2, '0')}:${String(event.end.getMinutes()).padStart(2, '0')}`,
-    )
+    setEndTime(formatHHmm(event.end))
     setModalAcclTZ(event.acclTZ || acclTZ)
     const restEvent = events.find((e) => e.id === restIdForDuty(event.id))
     if (restEvent) {
@@ -420,14 +415,15 @@ function Calendar() {
         )
         next = [...next, restEvent]
 
+        const duties = next.filter((e) => e.type === 'duty')
         const previousDuty = findPreviousDuty(next, start, updatedDuty.id)
         if (previousDuty) {
           const lnr = maybeBuildLnrBetween(
             previousDuty,
             updatedDuty,
             regulator,
-            acclTZ,
-            next.filter((e) => e.type === 'duty'),
+            previousDuty.acclTZ || dutyAccl,
+            duties,
           )
           if (lnr) {
             if (lnr.violated) {
@@ -443,8 +439,8 @@ function Calendar() {
             updatedDuty,
             nextDuty,
             regulator,
-            acclTZ,
-            next.filter((e) => e.type === 'duty'),
+            updatedDuty.acclTZ || dutyAccl,
+            duties,
           )
           if (lnr) {
             if (lnr.violated) {
@@ -457,6 +453,7 @@ function Calendar() {
         return next
       })
 
+      // Validate 10+travel before closing; form stays open if release already passed
       if (restType === '10+travel') {
         const result = scheduleTravelRestReminders(end)
         if (!result.ok) {
@@ -512,7 +509,7 @@ function Calendar() {
           previousDuty,
           newEvent,
           regulator,
-          acclTZ,
+          previousDuty.acclTZ || dutyAccl,
           next.filter((e) => e.type === 'duty'),
         )
         if (lnr) {
@@ -530,13 +527,9 @@ function Calendar() {
       if (!result.ok) {
         setIsEdit(true)
         setEditEvent(newEvent)
-        setStartTime(
-          `${String(newEvent.start.getHours()).padStart(2, '0')}:${String(newEvent.start.getMinutes()).padStart(2, '0')}`,
-        )
+        setStartTime(formatHHmm(newEvent.start))
         setEndDate(toLocalDateInputValue(newEvent.end))
-        setEndTime(
-          `${String(newEvent.end.getHours()).padStart(2, '0')}:${String(newEvent.end.getMinutes()).padStart(2, '0')}`,
-        )
+        setEndTime(formatHHmm(newEvent.end))
         setModalAcclTZ(newEvent.acclTZ || acclTZ)
         setRestType('10+travel')
         setShowAddDuty(true)
@@ -556,7 +549,10 @@ function Calendar() {
     resetDutyForm()
   }
 
-  const days = getCalendarDays(currentDate)
+  const days = useMemo(
+    () => getCalendarDays(currentDate),
+    [currentDate],
+  )
 
   const isInRange = (date: Date) => {
     if (!showAddDuty || !addDutyDate) return false
@@ -679,15 +675,11 @@ function Calendar() {
                   {day}
                 </div>
               ))}
-              {days.map((date: Date, index: number) => {
+              {days.map((date: Date) => {
                 const today = new Date()
                 const isToday = date.toDateString() === today.toDateString()
                 const dayStart = startOfLocalDay(date)
-                const dayEnd = new Date(dayStart)
-                dayEnd.setDate(dayEnd.getDate() + 1)
-                const dayEvents = events.filter(
-                  (event) => event.start < dayEnd && event.end > dayStart,
-                )
+                const dayEvents = eventsOnLocalDay(events, date)
                 let violationLeft = 0
                 const violatedDuty = dayEvents.find(
                   (e) => e.violated && e.type === 'duty',
@@ -703,9 +695,11 @@ function Calendar() {
                   const overlappingRest = dayEvents.find(
                     (e) =>
                       e.type === 'rest' &&
-                      !(
-                        violatedDuty.end <= e.start ||
-                        violatedDuty.start >= e.end
+                      eventsOverlap(
+                        violatedDuty.start,
+                        violatedDuty.end,
+                        e.start,
+                        e.end,
                       ),
                   )
                   if (overlappingRest) {
@@ -724,9 +718,11 @@ function Calendar() {
                   const overlappingDuty = dayEvents.find(
                     (e) =>
                       e.type === 'duty' &&
-                      !(
-                        violatedLNR!.end <= e.start ||
-                        violatedLNR!.start >= e.end
+                      eventsOverlap(
+                        violatedLNR!.start,
+                        violatedLNR!.end,
+                        e.start,
+                        e.end,
                       ),
                   )
                   if (overlappingDuty) {
@@ -744,7 +740,7 @@ function Calendar() {
                 }
                 return (
                   <div
-                    key={index}
+                    key={date.toISOString()}
                     className={`day ${getDayStatus(date)} ${date.getMonth() !== currentDate.getMonth() ? 'other-month' : ''} ${selectedDate && selectedDate.toDateString() === date.toDateString() ? 'selected' : ''} ${isInRange(date) ? 'in-range' : ''} ${isToday ? 'today' : ''}`}
                     onMouseDown={() => handleMouseDown(date)}
                     onMouseUp={handleMouseUp}

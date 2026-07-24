@@ -76,8 +76,12 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const toggleDarkMode = useCallback(() => {
-    setDarkMode(!darkMode)
-  }, [darkMode, setDarkMode])
+    setDarkModeState((prev) => {
+      const next = !prev
+      writeString(STORAGE_KEYS.theme, next ? 'dark' : 'light')
+      return next
+    })
+  }, [])
 
   const setTimeFormat = useCallback((value: TimeFormat) => {
     setTimeFormatState(value)

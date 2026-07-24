@@ -1,0 +1,36 @@
+.version-badge {
+  position: fixed;
+  right: 0.65rem;
+  bottom: 0.65rem;
+  z-index: 9999;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: min(90vw, 22rem);
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color, #444);
+  background: color-mix(in srgb, var(--card-bg, #1e1e1e) 88%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  font-size: 0.72rem;
+  line-height: 1.2;
+  pointer-events: none;
+  user-select: none;
+}
+
+.version-badge-label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary, #999);
+  font-weight: 600;
+}
+
+.version-badge-value {
+  color: var(--text-color, #eee);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

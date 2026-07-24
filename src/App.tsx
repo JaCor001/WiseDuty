@@ -5,6 +5,7 @@ import Calendar from './Calendar'
 import Signup from './Signup'
 import Login from './Login'
 import { SettingsProvider } from './features/settings/SettingsContext'
+import VersionBadge from './shared/ui/VersionBadge'
 import './App.css'
 
 function App() {
@@ -23,6 +24,7 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        <VersionBadge />
       </RouterComponent>
     </SettingsProvider>
   )
