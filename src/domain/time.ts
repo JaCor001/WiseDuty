@@ -48,13 +48,114 @@ export function formatTimeDisplay(
   timeFormat: '24h' | '12h',
 ): string {
   if (!timeHHmm) return ''
+  const parts = timeHHmm.split(':').map(Number)
+  const h = parts[0]
+  const m = parts[1] ?? 0
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return ''
   if (timeFormat === '12h') {
-    const [h, m] = timeHHmm.split(':').map(Number)
     const period = h >= 12 ? 'PM' : 'AM'
     const hour = h % 12 || 12
     return `${hour}:${String(m).padStart(2, '0')} ${period}`
   }
-  return timeHHmm
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
+/**
+ * Parse free-typed time into 24h `HH:mm`.
+ * Accepts: 2030, 20:30, 8:30pm, 0930am, 930a, 20, 8pm, etc.
+ * Digits 13–23 without am/pm are treated as 24h hours (e.g. 20 → 20:00 → 8:00 PM in 12h UI).
+ */
+export function parseFlexibleTime(input: string): string | null {
+  if (!input || !input.trim()) return null
+
+  let s = input.trim().toLowerCase()
+  // Normalize separators and common typos
+  s = s
+    .replace(/[.\-]/g, ':')
+    .replace(/\s+/g, '')
+    .replace(/a\.?m\.?/g, 'am')
+    .replace(/p\.?m\.?/g, 'pm')
+
+  let meridiem: 'am' | 'pm' | null = null
+  if (s.endsWith('am')) {
+    meridiem = 'am'
+    s = s.slice(0, -2)
+  } else if (s.endsWith('pm')) {
+    meridiem = 'pm'
+    s = s.slice(0, -2)
+  } else if (s.endsWith('a') && !/\d$/.test(s.slice(0, -1))) {
+    // bare "a" only if not part of digits — skip
+  } else if (/(?:^|[^0-9])a$/.test(s) || s.endsWith('a')) {
+    // "930a" or "9a"
+    if (s.endsWith('a') && s.length > 1 && /\d/.test(s)) {
+      meridiem = 'am'
+      s = s.slice(0, -1)
+    }
+  }
+  if (s.endsWith('p') && s.length > 1 && /\d/.test(s.slice(0, -1))) {
+    meridiem = 'pm'
+    s = s.slice(0, -1)
+  }
+
+  // Strip remaining non-digit except colon
+  s = s.replace(/[^0-9:]/g, '')
+  if (!s) return null
+
+  let hours: number
+  let minutes: number
+
+  if (s.includes(':')) {
+    const [hs, ms = '0'] = s.split(':')
+    if (!hs) return null
+    hours = parseInt(hs, 10)
+    // "8:3" → 8:30; "8:30" → 8:30; "8:03" → 8:03
+    if (ms.length === 1) minutes = parseInt(ms, 10) * 10
+    else minutes = parseInt(ms.slice(0, 2), 10)
+  } else {
+    if (!/^\d{1,4}$/.test(s)) return null
+    if (s.length <= 2) {
+      hours = parseInt(s, 10)
+      minutes = 0
+    } else if (s.length === 3) {
+      // 930 → 9:30
+      hours = parseInt(s.slice(0, 1), 10)
+      minutes = parseInt(s.slice(1), 10)
+    } else {
+      // 4 digits: 0930 / 2030
+      hours = parseInt(s.slice(0, 2), 10)
+      minutes = parseInt(s.slice(2), 10)
+    }
+  }
+
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null
+  if (minutes < 0 || minutes > 59) return null
+
+  if (meridiem) {
+    // Explicit am/pm: hour is 1–12 (0 → 12)
+    if (hours === 0) hours = 12
+    if (hours < 1 || hours > 12) {
+      // "20pm" etc. — fall back to 24h hour if valid
+      if (hours > 23) return null
+      // keep 13–23 as 24h and ignore conflicting meridiem for digit-only intent
+    } else if (meridiem === 'am') {
+      hours = hours === 12 ? 0 : hours
+    } else {
+      hours = hours === 12 ? 12 : hours + 12
+    }
+  } else if (hours < 0 || hours > 23) {
+    return null
+  }
+
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null
+
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+}
+
+/** Placeholder hint for free time entry. */
+export function timeInputPlaceholder(timeFormat: '24h' | '12h'): string {
+  return timeFormat === '12h'
+    ? 'e.g. 830pm or 2030'
+    : 'e.g. 2030 or 20:30'
 }
 
 /** True Zulu (UTC) display for a local day + HH:mm. */

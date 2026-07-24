@@ -1,0 +1,56 @@
+.free-time-input {
+  position: relative;
+  width: 100%;
+  margin-top: 0.25rem;
+}
+
+.free-time-input-field {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem 2.75rem 0.5rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--card-bg);
+  color: var(--text-color);
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.free-time-input-field:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px var(--glow-color);
+}
+
+.free-time-input.invalid .free-time-input-field {
+  border-color: #f44336;
+  box-shadow: 0 0 0 2px rgba(244, 67, 54, 0.2);
+}
+
+.free-time-input-hint {
+  position: absolute;
+  top: 50%;
+  right: 0.55rem;
+  transform: translateY(-50%);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+.free-time-input.invalid .free-time-input-hint {
+  top: 0.7rem;
+  transform: none;
+}
+
+.free-time-input-error {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  color: #c62828;
+}

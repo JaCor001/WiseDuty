@@ -38,6 +38,7 @@ import {
 import { useSettings } from './features/settings/SettingsContext'
 import { scheduleTravelRestReminders } from './shared/notifications'
 import { loadEvents, saveEvents } from './shared/storage'
+import FreeTimeInput from './shared/ui/FreeTimeInput'
 import SettingsPanel from './shared/ui/SettingsPanel'
 import TimeZoneSelector from './shared/ui/TimeZoneSelector'
 
@@ -833,13 +834,18 @@ function Calendar() {
               </h3>
               <label>
                 Start Time:
-                <input
-                  type="time"
+                <FreeTimeInput
                   value={startTime}
-                  onChange={(e) => setStartTime(e.target.value)}
+                  onChange={setStartTime}
+                  timeFormat={timeFormat}
+                  aria-label="Start time"
                 />
-                Local: {formatTimeDisplay(startTime, timeFormat)} | Zulu:{' '}
-                {getZuluTimeDisplay(startTime, addDutyDate, timeFormat)}
+                {startTime && (
+                  <span className="time-display">
+                    Local: {formatTimeDisplay(startTime, timeFormat)} | Zulu:{' '}
+                    {getZuluTimeDisplay(startTime, addDutyDate, timeFormat)}
+                  </span>
+                )}
               </label>
               <label>
                 End Date:
@@ -851,16 +857,21 @@ function Calendar() {
               </label>
               <label>
                 End Time:
-                <input
-                  type="time"
+                <FreeTimeInput
                   value={endTime}
-                  onChange={(e) => setEndTime(e.target.value)}
+                  onChange={setEndTime}
+                  timeFormat={timeFormat}
+                  aria-label="End time"
                 />
-                Local: {formatTimeDisplay(endTime, timeFormat)} | Zulu:{' '}
-                {getZuluTimeDisplay(
-                  endTime,
-                  endDate ? parseLocalDateTime(endDate, '00:00') : null,
-                  timeFormat,
+                {endTime && (
+                  <span className="time-display">
+                    Local: {formatTimeDisplay(endTime, timeFormat)} | Zulu:{' '}
+                    {getZuluTimeDisplay(
+                      endTime,
+                      endDate ? parseLocalDateTime(endDate, '00:00') : null,
+                      timeFormat,
+                    )}
+                  </span>
                 )}
               </label>
               <label>
