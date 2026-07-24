@@ -202,11 +202,14 @@ function Landing() {
               </h1>
               <p className="landing-hero-tagline">
                 Invisible <span className="hook-muted">Duty Regs</span> no more.
-                Seamlessly add
-                <span className="pill pill-red"> color</span>-
-                <span className="pill pill-amber"> coded</span>
-                <span className="pill pill-blue"> clarity</span> for the schedule
-                you actually want to fly.
+                Seamlessly add{' '}
+                <span className="landing-color-coded">
+                  <span className="pill pill-red">color</span>
+                  <span className="landing-color-coded-hyphen">-</span>
+                  <span className="pill pill-amber">coded</span>{' '}
+                  <span className="pill pill-blue">clarity</span>
+                </span>{' '}
+                for the schedule you actually want to fly.
               </p>
               <div className="landing-hero-actions">
                 <Link to="/signup" className="cta-button">
