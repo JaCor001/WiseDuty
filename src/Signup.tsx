@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
 import { useSettings } from './features/settings/SettingsContext'
+import { IconMoon, IconSun } from './shared/ui/icons'
 
 function Signup() {
   const { darkMode, toggleDarkMode } = useSettings()
@@ -45,11 +46,13 @@ function Signup() {
           <div className="header-actions">
             <button
               className="theme-toggle"
-              aria-label="Toggle dark mode"
+              aria-label={
+                darkMode ? 'Switch to light mode' : 'Switch to dark mode'
+              }
               type="button"
               onClick={toggleDarkMode}
             >
-              {darkMode ? '☀️' : '🌙'}
+              {darkMode ? <IconSun /> : <IconMoon />}
             </button>
           </div>
         </div>

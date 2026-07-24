@@ -4,6 +4,7 @@ import './App.css'
 import './Calendar.css'
 import { useSettings } from './features/settings/SettingsContext'
 import SettingsPanel from './shared/ui/SettingsPanel'
+import { IconMoon, IconSettings, IconSun } from './shared/ui/icons'
 
 function Landing() {
   const { darkMode, toggleDarkMode } = useSettings()
@@ -34,15 +35,15 @@ function Landing() {
                 aria-label="Settings"
                 onClick={() => setShowSettings(true)}
               >
-                ⚙️
+                <IconSettings />
               </button>
               <button
                 type="button"
                 className="theme-toggle"
-                aria-label="Toggle theme"
+                aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
                 onClick={toggleDarkMode}
               >
-                {darkMode ? '☀️' : '🌙'}
+                {darkMode ? <IconSun /> : <IconMoon />}
               </button>
             </div>
           </div>

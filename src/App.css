@@ -223,14 +223,26 @@ nav a:hover {
   border: 1px solid transparent;
   font-size: 1rem;
   cursor: pointer;
-  padding: 0.35rem 0.45rem;
+  padding: 0.4rem;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  line-height: 1;
-  opacity: 0.72;
-  filter: grayscale(0.35);
+  line-height: 0;
+  opacity: 0.78;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.15rem;
+  height: 2.15rem;
   transition: background-color 0.15s ease, opacity 0.15s ease, color 0.15s ease,
-    filter 0.15s ease;
+    border-color 0.15s ease;
+}
+
+.theme-toggle svg,
+.settings-button svg,
+.header-buttons button svg,
+.header-actions button svg {
+  display: block;
+  flex-shrink: 0;
 }
 
 .theme-toggle:hover,
@@ -238,10 +250,10 @@ nav a:hover {
 .header-buttons button:hover,
 .header-actions button:hover {
   background: var(--hover-bg);
-  border-color: transparent;
+  border-color: var(--border-color);
   opacity: 1;
   color: var(--text-color);
-  filter: grayscale(0.1);
+  filter: none;
 }
 
 .site-footer,
