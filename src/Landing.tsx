@@ -51,7 +51,6 @@ function useRevealOnScroll<T extends HTMLElement>() {
       ([entry]) => {
         if (entry.isIntersecting) {
           setVisible(true)
-          // Keep visible once revealed for a polished one-shot moment
           observer.unobserve(el)
         }
       },
@@ -98,14 +97,40 @@ function FeatureMoment({
 
 function Landing() {
   const [showSettings, setShowSettings] = useState(false)
-  const [scrolled, setScrolled] = useState(false)
-  const heroRef = useRef<HTMLElement | null>(null)
+  /** True once the hero logo has scrolled out — brand becomes the fixed header. */
+  const [logoPinned, setLogoPinned] = useState(false)
+  const heroLogoRef = useRef<HTMLHeadingElement | null>(null)
 
+  // Ensure the document itself can scroll on this page
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 24)
-    onScroll()
-    window.addEventListener('scroll', onScroll, { passive: true })
-    return () => window.removeEventListener('scroll', onScroll)
+    document.documentElement.classList.add('landing-scroll')
+    document.body.classList.add('landing-scroll')
+    return () => {
+      document.documentElement.classList.remove('landing-scroll')
+      document.body.classList.remove('landing-scroll')
+    }
+  }, [])
+
+  // When the large hero logo leaves the top of the viewport, pin brand + CTA
+  useEffect(() => {
+    const logo = heroLogoRef.current
+    if (!logo) return
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        // Pin header when logo is not intersecting the top band of the screen
+        setLogoPinned(!entry.isIntersecting)
+      },
+      {
+        // Trigger slightly before the logo fully leaves under a typical header height
+        root: null,
+        threshold: 0,
+        rootMargin: '-12px 0px 0px 0px',
+      },
+    )
+
+    observer.observe(logo)
+    return () => observer.disconnect()
   }, [])
 
   const scrollToFeatures = () => {
@@ -114,18 +139,30 @@ function Landing() {
 
   return (
     <>
-      <div className="landing-presentation">
+      <div className={`landing-presentation ${logoPinned ? 'logo-pinned' : ''}`}>
         <div className="landing-ambient" aria-hidden="true" />
 
+        {/*
+          Fixed shell always on top.
+          Brand + Get Started only appear after the hero logo scrolls away —
+          so the first “WiseDuty” becomes the sticky header identity.
+        */}
         <header
-          className={`landing-sticky-header ${scrolled ? 'is-scrolled' : ''}`}
+          className={`landing-fixed-header ${logoPinned ? 'is-pinned' : 'is-top'}`}
         >
-          <div className="landing-sticky-inner">
-            <div className="landing-sticky-top">
-              <Link to="/" className="landing-brand">
-                WiseDuty
-              </Link>
-              <div className="landing-sticky-tools">
+          <div className="landing-fixed-inner">
+            <div className="landing-fixed-row">
+              <div className="landing-fixed-brand-slot">
+                <Link
+                  to="/"
+                  className="landing-fixed-brand"
+                  tabIndex={logoPinned ? 0 : -1}
+                  aria-hidden={!logoPinned}
+                >
+                  WiseDuty
+                </Link>
+              </div>
+              <div className="landing-fixed-tools">
                 <Link to="/calendar" className="landing-nav-link">
                   Calendar
                 </Link>
@@ -143,8 +180,15 @@ function Landing() {
                 <ThemeToggle />
               </div>
             </div>
-            <div className="landing-sticky-cta">
-              <Link to="/signup" className="cta-button landing-header-cta">
+            <div
+              className="landing-fixed-cta-slot"
+              aria-hidden={!logoPinned}
+            >
+              <Link
+                to="/signup"
+                className="cta-button landing-header-cta"
+                tabIndex={logoPinned ? 0 : -1}
+              >
                 Get Started
               </Link>
             </div>
@@ -152,10 +196,12 @@ function Landing() {
         </header>
 
         <main>
-          <section className="landing-hero" ref={heroRef} aria-label="Intro">
+          <section className="landing-hero" aria-label="Intro">
             <div className="landing-hero-content">
               <p className="landing-eyebrow">Duty awareness, simplified</p>
-              <h1 className="landing-hero-logo">WiseDuty</h1>
+              <h1 className="landing-hero-logo" ref={heroLogoRef}>
+                WiseDuty
+              </h1>
               <p className="landing-hero-tagline">
                 Invisible duty regs no more. Color-coded clarity for the schedule
                 you actually want to fly.
@@ -183,7 +229,7 @@ function Landing() {
             className="landing-features"
             aria-label="Features"
           >
-            <div className="landing-features-intro reveal-block">
+            <div className="landing-features-intro">
               <h2>Built for the flight deck of life</h2>
               <p>
                 Scroll through each capability—every line gets its moment.
