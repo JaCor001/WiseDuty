@@ -493,10 +493,6 @@ html.landing-scroll #root {
   box-shadow: var(--shadow-sm);
 }
 
-.landing-video-cta {
-  min-width: 10rem;
-}
-
 /* ---------- Footer ---------- */
 
 .landing-footer {

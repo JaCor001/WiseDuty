@@ -258,9 +258,6 @@ function Landing() {
                   <span>Demo video coming soon</span>
                 </div>
               </div>
-              <Link to="/signup" className="cta-button landing-video-cta">
-                Get Started
-              </Link>
             </div>
           </section>
         </main>
