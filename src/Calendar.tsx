@@ -38,6 +38,7 @@ import {
 import { useSettings } from './features/settings/SettingsContext'
 import { scheduleTravelRestReminders } from './shared/notifications'
 import { loadEvents, saveEvents } from './shared/storage'
+import FreeTimeInput from './shared/ui/FreeTimeInput'
 import SettingsPanel from './shared/ui/SettingsPanel'
 import TimeZoneSelector from './shared/ui/TimeZoneSelector'
 
@@ -231,9 +232,8 @@ function Calendar() {
   const handleMouseDown = (date: Date) => {
     if (pressTimerRef.current) clearTimeout(pressTimerRef.current)
     pressTimerRef.current = setTimeout(() => {
-      setSelectedDate(date)
+      selectDate(date)
       setShowMenu(true)
-      setMenuDate(date)
       pressTimerRef.current = null
     }, 500)
   }
@@ -245,16 +245,22 @@ function Calendar() {
     }
   }
 
+  /** Last date the user targeted (click or long-press) — single source of truth for actions. */
+  const selectDate = (date: Date) => {
+    setSelectedDate(date)
+    setMenuDate(date)
+  }
+
   const handleClick = (date: Date) => {
     if (showMenu) return
     if (showAddDuty) {
       setAddDutyDate(date)
       setEndDate(toLocalDateInputValue(date))
-      setSelectedDate(date)
+      selectDate(date)
     } else if (isEdit) {
       const duty = findDutyOnDate(events, date)
       if (duty) {
-        setSelectedDate(date)
+        selectDate(date)
         setEditEvent(duty)
         setStartTime(formatHHmm(duty.start))
         setEndDate(toLocalDateInputValue(duty.end))
@@ -269,12 +275,13 @@ function Calendar() {
       )
       setTimeout(() => setAnimating(false), 300)
     } else {
-      setSelectedDate(date)
+      selectDate(date)
     }
   }
 
   const openAddDutyFor = (date: Date | null) => {
     if (!date) return
+    selectDate(date)
     setShowAddDuty(true)
     setShowMenu(false)
     setAddDutyDate(date)
@@ -287,8 +294,8 @@ function Calendar() {
   }
 
   const handleAddDuty = () => {
-    // P0 fix: fall back to selectedDate when long-press menuDate is unset
-    openAddDutyFor(menuDate ?? selectedDate)
+    // Prefer last clicked/selected date; fall back to long-press menu date only if needed
+    openAddDutyFor(selectedDate ?? menuDate)
   }
 
   const handleEditDuty = () => {
@@ -833,13 +840,18 @@ function Calendar() {
               </h3>
               <label>
                 Start Time:
-                <input
-                  type="time"
+                <FreeTimeInput
                   value={startTime}
-                  onChange={(e) => setStartTime(e.target.value)}
+                  onChange={setStartTime}
+                  timeFormat={timeFormat}
+                  aria-label="Start time"
                 />
-                Local: {formatTimeDisplay(startTime, timeFormat)} | Zulu:{' '}
-                {getZuluTimeDisplay(startTime, addDutyDate, timeFormat)}
+                {startTime && (
+                  <span className="time-display">
+                    Local: {formatTimeDisplay(startTime, timeFormat)} | Zulu:{' '}
+                    {getZuluTimeDisplay(startTime, addDutyDate, timeFormat)}
+                  </span>
+                )}
               </label>
               <label>
                 End Date:
@@ -851,16 +863,21 @@ function Calendar() {
               </label>
               <label>
                 End Time:
-                <input
-                  type="time"
+                <FreeTimeInput
                   value={endTime}
-                  onChange={(e) => setEndTime(e.target.value)}
+                  onChange={setEndTime}
+                  timeFormat={timeFormat}
+                  aria-label="End time"
                 />
-                Local: {formatTimeDisplay(endTime, timeFormat)} | Zulu:{' '}
-                {getZuluTimeDisplay(
-                  endTime,
-                  endDate ? parseLocalDateTime(endDate, '00:00') : null,
-                  timeFormat,
+                {endTime && (
+                  <span className="time-display">
+                    Local: {formatTimeDisplay(endTime, timeFormat)} | Zulu:{' '}
+                    {getZuluTimeDisplay(
+                      endTime,
+                      endDate ? parseLocalDateTime(endDate, '00:00') : null,
+                      timeFormat,
+                    )}
+                  </span>
                 )}
               </label>
               <label>
