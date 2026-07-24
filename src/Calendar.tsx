@@ -51,7 +51,7 @@ import FreeTimeInput from './shared/ui/FreeTimeInput'
 import SettingsPanel from './shared/ui/SettingsPanel'
 import TimeZoneSelector from './shared/ui/TimeZoneSelector'
 import ThemeToggle from './shared/ui/ThemeToggle'
-import { IconSettings } from './shared/ui/icons'
+import { IconClose, IconSettings } from './shared/ui/icons'
 
 function Calendar() {
   const {
@@ -773,56 +773,92 @@ function Calendar() {
             </div>
           </div>
           {selectedDate && (
-            <div className="day-details">
-              <h3>{selectedDate.toDateString()}</h3>
-              <p>
-                Events:{' '}
+            <div className="day-details" role="region" aria-label="Day details">
+              <div className="day-details-header">
+                <h3>{selectedDate.toDateString()}</h3>
+                <button
+                  type="button"
+                  className="day-details-close"
+                  aria-label="Close day details"
+                  onClick={() => setSelectedDate(null)}
+                >
+                  <IconClose size={18} />
+                </button>
+              </div>
+              <p className="day-details-events">
+                <span className="day-details-events-label">Events</span>
                 {events
                   .filter(
                     (e) =>
                       e.start.toDateString() === selectedDate.toDateString() ||
                       (e.start < selectedDate &&
-                        e.end >
-                          startOfLocalDay(selectedDate)),
+                        e.end > startOfLocalDay(selectedDate)),
                   )
                   .map((e) => e.title)
                   .join(', ') || 'None'}
               </p>
-              <div className="actions">
-                {getDayActions(selectedDate).map((action) => (
-                  <button
-                    type="button"
-                    key={action}
-                    onClick={
-                      action === 'Add Duty'
-                        ? handleAddDuty
-                        : action === 'Edit Duty'
-                          ? handleEditDuty
-                          : action === 'Delete Duty'
-                            ? handleDeleteDuty
-                            : () => alert(action)
-                    }
-                  >
-                    {action}
-                  </button>
-                ))}
+              <div className="day-details-actions">
+                {getDayActions(selectedDate).map((action) => {
+                  const isDelete = action === 'Delete Duty'
+                  const isPrimary =
+                    action === 'Add Duty' || action === 'Edit Duty'
+                  return (
+                    <button
+                      type="button"
+                      key={action}
+                      className={
+                        isDelete
+                          ? 'day-details-btn day-details-btn-danger'
+                          : isPrimary
+                            ? 'day-details-btn day-details-btn-primary'
+                            : 'day-details-btn day-details-btn-secondary'
+                      }
+                      onClick={
+                        action === 'Add Duty'
+                          ? handleAddDuty
+                          : action === 'Edit Duty'
+                            ? handleEditDuty
+                            : action === 'Delete Duty'
+                              ? handleDeleteDuty
+                              : () => alert(action)
+                      }
+                    >
+                      {action}
+                    </button>
+                  )
+                })}
               </div>
-              <button type="button" onClick={() => setSelectedDate(null)}>
-                Close
-              </button>
             </div>
           )}
 
           {showMenu && menuDate && (
-            <div className="modal">
-              <div className="modal-content">
-                <h3>Options for {menuDate.toDateString()}</h3>
-                <button type="button" onClick={handleAddDuty}>
-                  Add Duty
-                </button>
-                <button type="button" onClick={() => setShowMenu(false)}>
-                  Cancel
-                </button>
+            <div className="modal" onClick={() => setShowMenu(false)}>
+              <div
+                className="modal-content day-menu-modal"
+                onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-label={`Options for ${menuDate.toDateString()}`}
+              >
+                <div className="day-details-header">
+                  <h3>{menuDate.toDateString()}</h3>
+                  <button
+                    type="button"
+                    className="day-details-close"
+                    aria-label="Close"
+                    onClick={() => setShowMenu(false)}
+                  >
+                    <IconClose size={18} />
+                  </button>
+                </div>
+                <div className="day-details-actions">
+                  <button
+                    type="button"
+                    className="day-details-btn day-details-btn-primary"
+                    onClick={handleAddDuty}
+                  >
+                    Add Duty
+                  </button>
+                </div>
               </div>
             </div>
           )}
