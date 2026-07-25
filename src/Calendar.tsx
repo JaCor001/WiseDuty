@@ -17,19 +17,18 @@ import {
   eventsOnLocalDay,
   findDutyOnDate,
   findDutiesOnDate,
-  findNextDuty,
-  findPreviousDuty,
-  maybeBuildLnrBetween,
+  recomputeLocalNightRests,
   removeDutyAndRelated,
   restIdForDuty,
-  stripLnrTouching,
 } from './domain/events'
 import {
   eventsOverlap,
   getDutyMarkers,
   getMaxFdpHours,
   getMinRestHours,
+  markerBarAnchor,
   wouldExceedWeeklyLimit,
+  type DutyMarker,
 } from './domain/regulations'
 import {
   combineLocalDateAndTime,
@@ -155,7 +154,20 @@ function Calendar() {
     dayEnd.setDate(dayEnd.getDate() + 1)
     const dayEvents = eventsOnLocalDay(events, date)
     const allBars: ReactNode[] = []
-    const allMarkers: { type: string; eventId: string }[] = []
+    const allMarkers: {
+      type: DutyMarker
+      eventId: string
+      left: number
+      width: number
+      barTop: string
+    }[] = []
+
+    const markerTitle: Record<DutyMarker, string> = {
+      E: 'Early duty — starts 02:00–06:59 acclimatized',
+      L: 'Late duty — ends 00:00–01:59 acclimatized',
+      N: 'Night duty — starts 13:00–01:59 and ends after 01:59 acclimatized',
+      LNR: 'Local night rest',
+    }
 
     dayEvents.forEach((event) => {
       let barTop = '30%'
@@ -183,6 +195,7 @@ function Calendar() {
         dayEnd,
       )
 
+      // Classification uses acclimatized TZ; E on start day, L/N on end day only
       const markers = getDutyMarkers(
         event,
         regulator,
@@ -191,7 +204,13 @@ function Calendar() {
         isEnd,
       )
       markers.forEach((marker) =>
-        allMarkers.push({ type: marker, eventId: event.id }),
+        allMarkers.push({
+          type: marker,
+          eventId: event.id,
+          left,
+          width,
+          barTop,
+        }),
       )
 
       // Key includes day so multi-day events don't collide across cells
@@ -217,22 +236,44 @@ function Calendar() {
     })
 
     const markerElements = allMarkers.map((marker, index) => {
+      const anchor = markerBarAnchor(marker.type)
       const isLNR = marker.type === 'LNR'
+      // Sit just under the duty/rest bar this marker belongs to
+      const top = `calc(${marker.barTop} + clamp(6px, 1.1vh, 10px) + 2px)`
+
+      // Concentric gap from .day: --marker-cell-inset / --marker-min-width.
+      // End-anchored L/N use translateX(-100%); short end-day bars (e.g. 00:25)
+      // still clear the left corner curve via clamp floor = inset + min width.
+      const inset = 'var(--marker-cell-inset, 5px)'
+      const minW = 'var(--marker-min-width, 1.25em)'
+      let leftStyle: string
+      let transform: string | undefined
+      if (anchor === 'start') {
+        // left edge of chip
+        leftStyle = `clamp(${inset}, ${marker.left}%, calc(100% - ${inset} - ${minW}))`
+        transform = undefined
+      } else if (anchor === 'end') {
+        // right edge of chip (before translateX(-100%))
+        leftStyle = `clamp(calc(${inset} + ${minW}), ${marker.left + marker.width}%, calc(100% - ${inset}))`
+        transform = 'translateX(-100%)'
+      } else {
+        leftStyle = `clamp(calc(${inset} + ${minW} / 2), ${marker.left + marker.width / 2}%, calc(100% - ${inset} - ${minW} / 2))`
+        transform = 'translateX(-50%)'
+      }
+
       return (
         <span
           key={`${marker.eventId}-${marker.type}-${dayStart.toISOString()}-${index}`}
-          className={`marker ${marker.type}`}
-          style={
-            isLNR
-              ? {
-                  top: 'calc(30% + 12px + 2px)',
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                }
-              : { left: `${2 + index * 15}px`, bottom: '2px' }
-          }
+          className={`marker marker-anchored ${marker.type}`}
+          style={{
+            top,
+            left: leftStyle,
+            transform,
+          }}
+          title={markerTitle[marker.type]}
+          aria-label={markerTitle[marker.type]}
         >
-          {marker.type}
+          {isLNR ? 'LNR' : marker.type}
         </span>
       )
     })
@@ -387,7 +428,13 @@ function Calendar() {
     if (!selectedDate) return
     const event = findDutyOnDate(events, selectedDate)
     if (!event) return
-    setEvents((prev) => removeDutyAndRelated(prev, event))
+    setEvents((prev) =>
+      recomputeLocalNightRests(
+        removeDutyAndRelated(prev, event),
+        regulator,
+        acclTZ,
+      ),
+    )
     setSelectedDate(null)
   }
 
@@ -454,8 +501,6 @@ function Calendar() {
     }
 
     if (isEdit && editEvent) {
-      const oldStart = editEvent.start
-      const oldEnd = editEvent.end
       const updatedDuty: DutyEvent = {
         ...editEvent,
         start,
@@ -466,13 +511,12 @@ function Calendar() {
       }
 
       setEvents((prev) => {
-        let next = stripLnrTouching(prev, oldStart, oldEnd)
-        next = next.filter(
+        let next = prev.filter(
           (e) => e.id !== editEvent.id && e.id !== restIdForDuty(editEvent.id),
         )
         next = [...next, updatedDuty]
 
-        // Optional: rebuild rest if needed — keep previous rest hours via restType
+        // Rebuild required rest for this duty
         const restEvent = buildRestEvent(
           updatedDuty.id,
           end,
@@ -481,41 +525,12 @@ function Calendar() {
         )
         next = [...next, restEvent]
 
-        const duties = next.filter((e) => e.type === 'duty')
-        const previousDuty = findPreviousDuty(next, start, updatedDuty.id)
-        if (previousDuty) {
-          const lnr = maybeBuildLnrBetween(
-            previousDuty,
-            updatedDuty,
-            regulator,
-            previousDuty.acclTZ || dutyAccl,
-            duties,
-          )
-          if (lnr) {
-            if (lnr.violated) {
-              alert('Local night rest does not meet regulatory requirements.')
-            }
-            next = [...next, lnr]
-          }
+        // Full LNR recompute for all disruptive pairs (700.41)
+        next = recomputeLocalNightRests(next, regulator, dutyAccl)
+        const violatedLnr = next.some((e) => e.isLocalNightRest && e.violated)
+        if (violatedLnr) {
+          alert('Local night rest does not meet regulatory requirements.')
         }
-
-        const nextDuty = findNextDuty(next, end, updatedDuty.id)
-        if (nextDuty) {
-          const lnr = maybeBuildLnrBetween(
-            updatedDuty,
-            nextDuty,
-            regulator,
-            updatedDuty.acclTZ || dutyAccl,
-            duties,
-          )
-          if (lnr) {
-            if (lnr.violated) {
-              alert('Local night rest does not meet regulatory requirements.')
-            }
-            next = [...next, lnr]
-          }
-        }
-
         return next
       })
 
@@ -568,22 +583,13 @@ function Calendar() {
     const restEvent = buildRestEvent(newId, end, actualRestHours, restType)
 
     setEvents((prev) => {
-      let next = [...prev, newEvent, restEvent]
-      const previousDuty = findPreviousDuty(next, start, newId)
-      if (previousDuty) {
-        const lnr = maybeBuildLnrBetween(
-          previousDuty,
-          newEvent,
-          regulator,
-          previousDuty.acclTZ || dutyAccl,
-          next.filter((e) => e.type === 'duty'),
-        )
-        if (lnr) {
-          if (lnr.violated) {
-            alert('Local night rest does not meet regulatory requirements.')
-          }
-          next = [...next, lnr]
-        }
+      const next = recomputeLocalNightRests(
+        [...prev, newEvent, restEvent],
+        regulator,
+        dutyAccl,
+      )
+      if (next.some((e) => e.isLocalNightRest && e.violated)) {
+        alert('Local night rest does not meet regulatory requirements.')
       }
       return next
     })

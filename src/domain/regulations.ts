@@ -1,6 +1,12 @@
 import type { AvgSectorTime, DutyEvent, Regulator } from './types'
 import { MAX_WEEKLY_DUTY_HOURS } from './types'
-import { getHourInTZ } from './time'
+import {
+  getHourInTZ,
+  getMinutesInTZ,
+  getZonedTimeParts,
+  nextZonedWallTime,
+  zonedWallTimeOnDay,
+} from './time'
 
 type SectorGroupKey = string
 type TimeSlotKey = string
@@ -214,6 +220,7 @@ export function wouldExceedWeeklyLimit(
   return prior + newHours > MAX_WEEKLY_DUTY_HOURS
 }
 
+/** Legacy helper retained for non-TC rough windows (hours). */
 export function getNightWindow(regulator: Regulator): {
   nightStart: number
   nightEnd: number
@@ -230,71 +237,78 @@ export function getNightWindow(regulator: Regulator): {
 
 export type DutyMarker = 'E' | 'L' | 'N' | 'LNR'
 
-export function getDutyMarkers(
-  event: DutyEvent,
-  regulator: Regulator,
-  globalAcclTZ: string,
-  isStartOnDay: boolean,
-  isEndOnDay: boolean,
-): DutyMarker[] {
-  if (event.type === 'rest' && event.isLocalNightRest) {
-    return ['LNR']
-  }
-  if (event.type !== 'duty') return []
-
-  const tz = event.acclTZ || globalAcclTZ
-  const acclimatizedStartHour = getHourInTZ(event.start, tz)
-  const acclimatizedEndHour = getHourInTZ(event.end, tz)
-  const { nightStart, nightEnd } = getNightWindow(regulator)
-  const markers: DutyMarker[] = []
-
-  if (
-    isStartOnDay &&
-    ((regulator === 'TC' &&
-      acclimatizedStartHour >= 2 &&
-      acclimatizedStartHour < 7) ||
-      (regulator !== 'TC' && acclimatizedStartHour < 6))
-  ) {
-    markers.push('E')
-  } else if (
-    isEndOnDay &&
-    ((regulator === 'TC' &&
-      acclimatizedEndHour >= 0 &&
-      acclimatizedEndHour < 2) ||
-      (regulator !== 'TC' && acclimatizedEndHour > 22))
-  ) {
-    markers.push('L')
-  } else if (
-    isEndOnDay &&
-    ((regulator === 'TC' &&
-      (acclimatizedStartHour >= 13 || acclimatizedStartHour < 2) &&
-      acclimatizedEndHour > 1) ||
-      (regulator !== 'TC' &&
-        acclimatizedStartHour < nightEnd &&
-        acclimatizedEndHour > nightStart))
-  ) {
-    markers.push('N')
-  }
-
-  return markers
+function acclTZFor(event: DutyEvent, globalAcclTZ: string): string {
+  return event.acclTZ || globalAcclTZ
 }
 
-export function dutyHasNightMarker(
-  event: DutyEvent,
+/**
+ * TC Early duty: begins between 02:00 and 06:59 acclimatized local time.
+ * AC 700-047 §2.3(b).
+ */
+export function isEarlyDuty(
+  start: Date,
   regulator: Regulator,
-  globalAcclTZ: string,
+  tz: string,
 ): boolean {
-  const tz = event.acclTZ || globalAcclTZ
-  const acclimatizedStartHour = getHourInTZ(event.start, tz)
-  const acclimatizedEndHour = getHourInTZ(event.end, tz)
-  const { nightStart, nightEnd } = getNightWindow(regulator)
+  const m = getMinutesInTZ(start, tz)
   if (regulator === 'TC') {
-    return (
-      (acclimatizedStartHour >= 13 || acclimatizedStartHour < 2) &&
-      acclimatizedEndHour > 1
-    )
+    return m >= 2 * 60 && m <= 6 * 60 + 59
   }
-  return acclimatizedStartHour < nightEnd && acclimatizedEndHour > nightStart
+  // Placeholder non-TC: starts before 06:00
+  return m < 6 * 60
+}
+
+/**
+ * TC Late duty: ends between midnight and 01:59 acclimatized local time.
+ * AC 700-047 §2.3(d).
+ */
+export function isLateDuty(
+  end: Date,
+  regulator: Regulator,
+  tz: string,
+): boolean {
+  const m = getMinutesInTZ(end, tz)
+  if (regulator === 'TC') {
+    return m >= 0 && m <= 1 * 60 + 59
+  }
+  // Placeholder non-TC: ends after 22:00
+  return m > 22 * 60
+}
+
+/**
+ * TC Night duty: begins between 13:00 and 01:59 and ends after 01:59
+ * (duty still on at/after 02:00 acclimatized — i.e. passes the 01:59 overnight boundary).
+ * AC 700-047 §2.3(f).
+ *
+ * Same-day afternoon/evening duties (e.g. 14:00–22:00) are NOT night duties.
+ */
+export function isNightDuty(
+  start: Date,
+  end: Date,
+  regulator: Regulator,
+  tz: string,
+): boolean {
+  if (end.getTime() <= start.getTime()) return false
+
+  if (regulator === 'TC') {
+    const startM = getMinutesInTZ(start, tz)
+    const startInWindow = startM >= 13 * 60 || startM < 2 * 60
+    if (!startInWindow) return false
+
+    // Duty must reach 02:00 acclimatized (ends after 01:59 of the overnight period).
+    const twoAm = nextZonedWallTime(start, tz, 2, 0, true)
+    // If start is already at/after 02:00 same civil morning, nextZonedWallTime(..., inclusive)
+    // returns that 02:00 only when start < 02:00 same day... For start 01:00, twoAm is 02:00 same day.
+    // For start 14:00, twoAm is 02:00 next calendar day.
+    // For start 03:00 (not in window) we already returned false.
+    return end.getTime() >= twoAm.getTime()
+  }
+
+  // Placeholder non-TC: rough WOCL-style overlap using hour windows
+  const { nightStart, nightEnd } = getNightWindow(regulator)
+  const startH = getHourInTZ(start, tz)
+  const endH = getHourInTZ(end, tz)
+  return startH < nightEnd && endH > nightStart
 }
 
 export function dutyHasEarlyMarker(
@@ -302,75 +316,187 @@ export function dutyHasEarlyMarker(
   regulator: Regulator,
   globalAcclTZ: string,
 ): boolean {
-  const tz = event.acclTZ || globalAcclTZ
-  const hour = getHourInTZ(event.start, tz)
-  if (regulator === 'TC') return hour >= 2 && hour < 7
-  return hour < 6
+  if (event.type !== 'duty') return false
+  return isEarlyDuty(event.start, regulator, acclTZFor(event, globalAcclTZ))
+}
+
+export function dutyHasLateMarker(
+  event: DutyEvent,
+  regulator: Regulator,
+  globalAcclTZ: string,
+): boolean {
+  if (event.type !== 'duty') return false
+  return isLateDuty(event.end, regulator, acclTZFor(event, globalAcclTZ))
+}
+
+export function dutyHasNightMarker(
+  event: DutyEvent,
+  regulator: Regulator,
+  globalAcclTZ: string,
+): boolean {
+  if (event.type !== 'duty') return false
+  const tz = acclTZFor(event, globalAcclTZ)
+  return isNightDuty(event.start, event.end, regulator, tz)
+}
+
+/**
+ * CAR 700.41 disruptive schedule: LNR between (late|night)↔early transitions.
+ * (a) late or night ends, then early begins
+ * (b) early ends, then late or night begins
+ */
+export function isDisruptiveTransition(
+  previous: DutyEvent,
+  next: DutyEvent,
+  regulator: Regulator,
+  globalAcclTZ: string,
+): boolean {
+  if (previous.type !== 'duty' || next.type !== 'duty') return false
+
+  const prevTz = acclTZFor(previous, globalAcclTZ)
+  const nextTz = acclTZFor(next, globalAcclTZ)
+
+  const prevE = isEarlyDuty(previous.start, regulator, prevTz)
+  const prevL = isLateDuty(previous.end, regulator, prevTz)
+  const prevN = isNightDuty(previous.start, previous.end, regulator, prevTz)
+
+  const nextE = isEarlyDuty(next.start, regulator, nextTz)
+  const nextL = isLateDuty(next.end, regulator, nextTz)
+  const nextN = isNightDuty(next.start, next.end, regulator, nextTz)
+
+  const prevLateOrNight = prevL || prevN
+  const nextLateOrNight = nextL || nextN
+
+  return (prevLateOrNight && nextE) || (prevE && nextLateOrNight)
+}
+
+/**
+ * UI markers for a calendar day cell — at most one chip per marker type per duty.
+ *
+ * Day gating (each type appears on a single intuitive day):
+ * - E (Early): start day only — about report time
+ * - L (Late): end day only — about release 00:00–01:59
+ * - N (Night): end day only — about release after 01:59 / overnight character
+ *   (same-day night: start === end day → one N)
+ *
+ * Day keys use acclimatized civil day when `dayKeyAccl` is provided;
+ * otherwise caller-provided isStartOnDay / isEndOnDay.
+ */
+export function getDutyMarkers(
+  event: DutyEvent,
+  regulator: Regulator,
+  globalAcclTZ: string,
+  isStartOnDay: boolean,
+  isEndOnDay: boolean,
+  /** Optional YYYY-MM-DD in acclimatized TZ for the cell being rendered. */
+  dayKeyAccl?: string,
+): DutyMarker[] {
+  if (event.type === 'rest' && event.isLocalNightRest) {
+    return ['LNR']
+  }
+  if (event.type !== 'duty') return []
+
+  const tz = acclTZFor(event, globalAcclTZ)
+  const startParts = getZonedTimeParts(event.start, tz)
+  const endParts = getZonedTimeParts(event.end, tz)
+
+  let showStart = isStartOnDay
+  let showEnd = isEndOnDay
+  if (dayKeyAccl) {
+    showStart = startParts.dayKey === dayKeyAccl
+    showEnd = endParts.dayKey === dayKeyAccl
+  }
+
+  const markers: DutyMarker[] = []
+  if (showStart && isEarlyDuty(event.start, regulator, tz)) {
+    markers.push('E')
+  }
+  if (showEnd && isLateDuty(event.end, regulator, tz)) {
+    markers.push('L')
+  }
+  // Night is a whole-duty property; show once on the end (release) day only.
+  if (showEnd && isNightDuty(event.start, event.end, regulator, tz)) {
+    markers.push('N')
+  }
+
+  return markers
+}
+
+/** Horizontal anchor for a marker relative to its duty bar in the day cell. */
+export type MarkerBarAnchor = 'start' | 'end' | 'center'
+
+export function markerBarAnchor(type: DutyMarker): MarkerBarAnchor {
+  if (type === 'E') return 'start'
+  if (type === 'L' || type === 'N') return 'end'
+  return 'center' // LNR
 }
 
 export interface LocalNightRestResult {
   start: Date
   end: Date
   violated: boolean
+  /** Hours of rest gap that fall inside a 22:30–09:30 accl window (best window). */
+  nightWindowHours: number
+  /** Total rest gap hours. */
+  gapHours: number
 }
 
 /**
- * Build local night rest between a prior duty with N and a following duty with E.
- * Uses the gap between duties (lnrStart = previous end, lnrEnd = next start).
+ * Best overlap (hours) between rest gap [gapStart, gapEnd] and any
+ * acclimatized 22:30→09:30 local-night window that intersects the gap.
+ * TC local night's rest: ≥9 hours inside 22:30–09:30 (AC 700-047 §2.3(e)).
+ */
+export function bestLocalNightWindowHours(
+  gapStart: Date,
+  gapEnd: Date,
+  tz: string,
+): number {
+  if (gapEnd.getTime() <= gapStart.getTime()) return 0
+
+  let best = 0
+  // Check windows anchored on civil days from day before gap start through gap end.
+  for (let dayOffset = -1; dayOffset <= 3; dayOffset++) {
+    const windowStart = zonedWallTimeOnDay(gapStart, tz, 22, 30, dayOffset)
+    // 09:30 is on the following civil morning relative to that 22:30
+    const windowEnd = zonedWallTimeOnDay(windowStart, tz, 9, 30, 1)
+    const overlapStart = Math.max(gapStart.getTime(), windowStart.getTime())
+    const overlapEnd = Math.min(gapEnd.getTime(), windowEnd.getTime())
+    if (overlapEnd > overlapStart) {
+      const hours = (overlapEnd - overlapStart) / (1000 * 60 * 60)
+      if (hours > best) best = hours
+    }
+  }
+  return best
+}
+
+/**
+ * Evaluate local night rest for the gap between two duties (700.41 + 700.40).
+ * - LNR quality: ≥9 h inside 22:30–09:30 acclimatized
+ * - Base rest: gap ≥ min rest hours for regulator (700.40), when provided
+ * Uses acclimatized TZ — not browser local.
  */
 export function computeLocalNightRest(
   previousDutyEnd: Date,
   nextDutyStart: Date,
+  tz: string,
+  minRestHours = 12,
 ): LocalNightRestResult {
   const lnrStart = previousDutyEnd
   const lnrEnd = nextDutyStart
-  const duration =
+  const gapHours =
     (lnrEnd.getTime() - lnrStart.getTime()) / (1000 * 60 * 60)
-
-  const nightStart = new Date(
-    previousDutyEnd.getFullYear(),
-    previousDutyEnd.getMonth(),
-    previousDutyEnd.getDate(),
-    22,
-    30,
-  )
-  const nightEnd = new Date(
-    nextDutyStart.getFullYear(),
-    nextDutyStart.getMonth(),
-    nextDutyStart.getDate(),
-    9,
-    30,
-  )
-  const overlapStart = Math.max(lnrStart.getTime(), nightStart.getTime())
-  const overlapEnd = Math.min(lnrEnd.getTime(), nightEnd.getTime())
-  const nightDuration =
-    overlapEnd > overlapStart
-      ? (overlapEnd - overlapStart) / (1000 * 60 * 60)
-      : 0
+  const nightWindowHours = bestLocalNightWindowHours(lnrStart, lnrEnd, tz)
 
   let violated = false
-  if (duration < 12) violated = true
-  if (nightDuration < 9) violated = true
+  if (gapHours < minRestHours) violated = true
+  if (nightWindowHours < 9) violated = true
 
-  const maxStart = new Date(
-    previousDutyEnd.getFullYear(),
-    previousDutyEnd.getMonth(),
-    previousDutyEnd.getDate(),
-    0,
-    30,
-  )
-  if (lnrStart > maxStart) violated = true
-
-  const minEnd = new Date(
-    nextDutyStart.getFullYear(),
-    nextDutyStart.getMonth(),
-    nextDutyStart.getDate(),
-    7,
-    30,
-  )
-  if (lnrEnd < minEnd) violated = true
-
-  return { start: lnrStart, end: lnrEnd, violated }
+  return {
+    start: lnrStart,
+    end: lnrEnd,
+    violated,
+    nightWindowHours,
+    gapHours,
+  }
 }
 
 export function eventsOverlap(

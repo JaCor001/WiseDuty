@@ -2,16 +2,149 @@
  * Timezone-safe helpers for duty calculations and display.
  */
 
-export function getHourInTZ(date: Date, tz: string): number {
-  const raw = new Intl.DateTimeFormat('en-US', {
+export interface ZonedTimeParts {
+  year: number
+  month: number
+  day: number
+  hour: number
+  minute: number
+  /** Minutes from local midnight in `tz` (0–1439). */
+  minutesFromMidnight: number
+  /** Calendar day key YYYY-MM-DD in `tz`. */
+  dayKey: string
+}
+
+/**
+ * Wall-clock parts of `date` in IANA timezone `tz`.
+ * Used for ELN / LNR rules that must use acclimatized local time.
+ */
+export function getZonedTimeParts(date: Date, tz: string): ZonedTimeParts {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
     hour: 'numeric',
+    minute: '2-digit',
     hour12: false,
-  }).format(date)
-  const hour = parseInt(raw, 10)
+  }).formatToParts(date)
+
+  const num = (type: Intl.DateTimeFormatPartTypes) => {
+    const v = parts.find((p) => p.type === type)?.value
+    return v != null ? parseInt(v, 10) : NaN
+  }
+
+  let hour = num('hour')
   // Some engines format midnight as "24"
-  if (hour === 24) return 0
-  return Number.isFinite(hour) ? hour : 0
+  if (hour === 24) hour = 0
+  const minute = num('minute')
+  const year = num('year')
+  const month = num('month')
+  const day = num('day')
+  const safeHour = Number.isFinite(hour) ? hour : 0
+  const safeMinute = Number.isFinite(minute) ? minute : 0
+  const safeYear = Number.isFinite(year) ? year : 1970
+  const safeMonth = Number.isFinite(month) ? month : 1
+  const safeDay = Number.isFinite(day) ? day : 1
+
+  return {
+    year: safeYear,
+    month: safeMonth,
+    day: safeDay,
+    hour: safeHour,
+    minute: safeMinute,
+    minutesFromMidnight: safeHour * 60 + safeMinute,
+    dayKey: `${String(safeYear).padStart(4, '0')}-${String(safeMonth).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`,
+  }
+}
+
+/** Minutes from midnight (0–1439) of `date` in timezone `tz`. */
+export function getMinutesInTZ(date: Date, tz: string): number {
+  return getZonedTimeParts(date, tz).minutesFromMidnight
+}
+
+/**
+ * Resolve the absolute instant when the wall clock in `tz` reads
+ * `year-month-day hour:minute` (civil date in that zone).
+ */
+export function zonedWallTime(
+  tz: string,
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+): Date {
+  // Iteratively correct a UTC guess so zoned parts match the target wall time.
+  let utc = Date.UTC(year, month - 1, day, hour, minute, 0)
+  for (let i = 0; i < 4; i++) {
+    const g = getZonedTimeParts(new Date(utc), tz)
+    const asIfUtc = Date.UTC(g.year, g.month - 1, g.day, g.hour, g.minute, 0)
+    const target = Date.UTC(year, month - 1, day, hour, minute, 0)
+    const delta = target - asIfUtc
+    if (Math.abs(delta) < 500) break
+    utc += delta
+  }
+  return new Date(utc)
+}
+
+/** Civil date of `around` in `tz`, plus `dayOffset` calendar days. */
+export function zonedCivilDate(
+  around: Date,
+  tz: string,
+  dayOffset = 0,
+): { year: number; month: number; day: number; dayKey: string } {
+  const p = getZonedTimeParts(around, tz)
+  // Shift via UTC date arithmetic on the civil Y-M-D (not local browser).
+  const shifted = new Date(Date.UTC(p.year, p.month - 1, p.day + dayOffset))
+  const year = shifted.getUTCFullYear()
+  const month = shifted.getUTCMonth() + 1
+  const day = shifted.getUTCDate()
+  return {
+    year,
+    month,
+    day,
+    dayKey: `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+  }
+}
+
+/**
+ * Absolute instant of wall-clock `hour:minute` on the civil day of `around` in `tz`
+ * (optionally offset by `dayOffset` civil days).
+ */
+export function zonedWallTimeOnDay(
+  around: Date,
+  tz: string,
+  hour: number,
+  minute: number,
+  dayOffset = 0,
+): Date {
+  const d = zonedCivilDate(around, tz, dayOffset)
+  return zonedWallTime(tz, d.year, d.month, d.day, hour, minute)
+}
+
+/**
+ * First instant of local wall-clock `hour:minute` in `tz` that is strictly
+ * after `from`, or at `from` when `inclusive` and it lands exactly on the wall time.
+ */
+export function nextZonedWallTime(
+  from: Date,
+  tz: string,
+  hour: number,
+  minute: number,
+  inclusive = false,
+): Date {
+  const sameDay = zonedWallTimeOnDay(from, tz, hour, minute, 0)
+  if (inclusive) {
+    if (sameDay.getTime() >= from.getTime()) return sameDay
+  } else if (sameDay.getTime() > from.getTime()) {
+    return sameDay
+  }
+  return zonedWallTimeOnDay(from, tz, hour, minute, 1)
+}
+
+export function getHourInTZ(date: Date, tz: string): number {
+  return getZonedTimeParts(date, tz).hour
 }
 
 /** Local calendar YYYY-MM-DD (avoids UTC shift from toISOString). */

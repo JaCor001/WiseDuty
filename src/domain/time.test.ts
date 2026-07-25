@@ -4,8 +4,12 @@ import {
   dayBarPosition,
   formatHHmm,
   getHourInTZ,
+  getMinutesInTZ,
+  getZonedTimeParts,
+  nextZonedWallTime,
   parseLocalDateTime,
   toLocalDateInputValue,
+  zonedWallTime,
 } from './time'
 
 describe('toLocalDateInputValue', () => {
@@ -58,5 +62,35 @@ describe('getHourInTZ', () => {
     const hour = getHourInTZ(d, 'UTC')
     expect(hour === 0 || hour === 24).toBe(true)
     expect(hour === 24 ? 0 : hour).toBe(0)
+  })
+})
+
+describe('zoned wall-time helpers', () => {
+  it('resolves UTC wall times round-trip', () => {
+    const d = zonedWallTime('UTC', 2024, 6, 10, 14, 30)
+    const p = getZonedTimeParts(d, 'UTC')
+    expect(p.year).toBe(2024)
+    expect(p.month).toBe(6)
+    expect(p.day).toBe(10)
+    expect(p.hour).toBe(14)
+    expect(p.minute).toBe(30)
+    expect(getMinutesInTZ(d, 'UTC')).toBe(14 * 60 + 30)
+  })
+
+  it('nextZonedWallTime finds next 02:00 after afternoon start', () => {
+    const start = zonedWallTime('UTC', 2024, 6, 10, 14, 0)
+    const twoAm = nextZonedWallTime(start, 'UTC', 2, 0, true)
+    const p = getZonedTimeParts(twoAm, 'UTC')
+    expect(p.day).toBe(11)
+    expect(p.hour).toBe(2)
+    expect(p.minute).toBe(0)
+  })
+
+  it('nextZonedWallTime keeps same-day 02:00 after 01:00 start', () => {
+    const start = zonedWallTime('UTC', 2024, 6, 10, 1, 0)
+    const twoAm = nextZonedWallTime(start, 'UTC', 2, 0, true)
+    const p = getZonedTimeParts(twoAm, 'UTC')
+    expect(p.day).toBe(10)
+    expect(p.hour).toBe(2)
   })
 })

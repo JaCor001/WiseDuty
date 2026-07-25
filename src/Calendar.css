@@ -217,7 +217,16 @@
   align-items: flex-start;
   justify-content: flex-start;
   padding: 0;
-  border-radius: var(--radius-sm, 8px);
+  /*
+   * Concentric marker geometry (nested rounded rect):
+   *   r_marker ≈ r_cell − inset
+   * Inset is at least half the cell radius so chips clear the corner curve.
+   */
+  --day-radius: var(--radius-sm, 8px);
+  --marker-cell-inset: max(5px, calc(var(--day-radius) * 0.5));
+  --marker-radius: max(2px, calc(var(--day-radius) - var(--marker-cell-inset)));
+  --marker-min-width: 1.25em;
+  border-radius: var(--day-radius);
   cursor: pointer;
   position: relative;
   transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
@@ -346,27 +355,49 @@
 
 .marker {
   position: absolute;
-  bottom: 2px;
-  left: 2px;
-  font-size: 0.7rem;
-  font-weight: bold;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
   color: var(--text-secondary);
   background: var(--card-bg);
-  padding: 0rem 0.2rem;
-  border-radius: 2px;
+  padding: 0.14rem 0.32rem;
+  /* Nested radius: shares the cell’s corner family (r_cell − inset) */
+  border-radius: var(--marker-radius, 3px);
   border: 1px solid var(--border-color);
-  height: 1em;
   display: inline-block;
   pointer-events: none;
+  z-index: 2;
+  white-space: nowrap;
+  max-width: calc(100% - 2 * var(--marker-cell-inset, 5px));
+  min-width: var(--marker-min-width, 1.25em);
+  text-align: center;
+  box-sizing: border-box;
+}
+
+/* Anchored under duty bar (E at start, L/N at end, LNR centered) */
+.marker.marker-anchored {
+  bottom: auto;
 }
 
 .marker.E {
-}
-
-.marker.N {
+  color: color-mix(in srgb, var(--day-blue-color, #2563eb) 85%, var(--text-color));
+  border-color: color-mix(in srgb, var(--day-blue-color, #2563eb) 35%, var(--border-color));
 }
 
 .marker.L {
+  color: color-mix(in srgb, #c2410c 80%, var(--text-color));
+  border-color: color-mix(in srgb, #c2410c 30%, var(--border-color));
+}
+
+.marker.N {
+  color: color-mix(in srgb, #4f46e5 85%, var(--text-color));
+  border-color: color-mix(in srgb, #4f46e5 35%, var(--border-color));
+}
+
+.marker.LNR {
+  color: color-mix(in srgb, var(--day-rest-color, #7e22ce) 85%, var(--text-color));
+  border-color: color-mix(in srgb, var(--day-rest-color, #7e22ce) 35%, var(--border-color));
 }
 
 .day-details {

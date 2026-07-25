@@ -1,11 +1,10 @@
-import type { DutyEvent, RestType, StoredDutyEvent } from './types'
+import type { DutyEvent, Regulator, RestType, StoredDutyEvent } from './types'
 import {
   computeLocalNightRest,
-  dutyHasEarlyMarker,
-  dutyHasNightMarker,
   eventsOverlap,
+  getMinRestHours,
+  isDisruptiveTransition,
 } from './regulations'
-import type { Regulator } from './types'
 
 export function serializeEvents(events: DutyEvent[]): StoredDutyEvent[] {
   return events.map((e) => ({
@@ -76,17 +75,13 @@ export function removeDutyAndRelated(
   duty: DutyEvent,
 ): DutyEvent[] {
   const restId = restIdForDuty(duty.id)
-  return events.filter((e) => {
+  const without = events.filter((e) => {
     if (e.id === duty.id || e.id === restId) return false
-    if (
-      e.isLocalNightRest &&
-      (e.start.getTime() === duty.end.getTime() ||
-        e.end.getTime() === duty.start.getTime())
-    ) {
-      return false
-    }
+    // Drop auto LNRs; caller should recompute via recomputeLocalNightRests
+    if (e.isLocalNightRest) return false
     return true
   })
+  return without
 }
 
 export function buildRestEvent(
@@ -107,7 +102,8 @@ export function buildRestEvent(
 }
 
 /**
- * If previous duty has N and next has E, create an LNR event spanning the gap.
+ * If previous→next is a disruptive schedule transition (700.41), create an LNR
+ * event spanning the gap. Covers (L|N)→E and E→(L|N), not only N→E.
  */
 export function maybeBuildLnrBetween(
   previous: DutyEvent,
@@ -117,10 +113,19 @@ export function maybeBuildLnrBetween(
   existingDuties: DutyEvent[],
 ): DutyEvent | null {
   if (previous.type !== 'duty' || next.type !== 'duty') return null
-  if (!dutyHasNightMarker(previous, regulator, globalAcclTZ)) return null
-  if (!dutyHasEarlyMarker(next, regulator, globalAcclTZ)) return null
+  if (!isDisruptiveTransition(previous, next, regulator, globalAcclTZ)) {
+    return null
+  }
 
-  const result = computeLocalNightRest(previous.end, next.start)
+  // Evaluate LNR quality in the acclimatized TZ of the earlier duty (fallback global).
+  const tz = previous.acclTZ || next.acclTZ || globalAcclTZ
+  const minRest = getMinRestHours(regulator)
+  const result = computeLocalNightRest(
+    previous.end,
+    next.start,
+    tz,
+    minRest,
+  )
   let violated = result.violated
 
   const overlapsDuty = existingDuties.some(
@@ -141,6 +146,45 @@ export function maybeBuildLnrBetween(
     isLocalNightRest: true,
     violated,
   }
+}
+
+/**
+ * Strip all auto-generated local night rest events.
+ */
+export function stripAllLnr(events: DutyEvent[]): DutyEvent[] {
+  return events.filter((e) => !e.isLocalNightRest)
+}
+
+/**
+ * Recompute every LNR from adjacent duties after add/edit/delete.
+ * Clears existing auto LNRs and inserts one per disruptive pair.
+ */
+export function recomputeLocalNightRests(
+  events: DutyEvent[],
+  regulator: Regulator,
+  globalAcclTZ: string,
+): DutyEvent[] {
+  const base = stripAllLnr(events)
+  const duties = base
+    .filter((e) => e.type === 'duty')
+    .sort((a, b) => a.start.getTime() - b.start.getTime())
+
+  const lnrs: DutyEvent[] = []
+  for (let i = 0; i < duties.length - 1; i++) {
+    const prev = duties[i]
+    const next = duties[i + 1]
+    // Only adjacent in time if no other duty between (sorted list guarantees)
+    const lnr = maybeBuildLnrBetween(
+      prev,
+      next,
+      regulator,
+      globalAcclTZ,
+      duties,
+    )
+    if (lnr) lnrs.push(lnr)
+  }
+
+  return [...base, ...lnrs]
 }
 
 export function findPreviousDuty(
@@ -173,6 +217,7 @@ export function findNextDuty(
     .sort((a, b) => a.start.getTime() - b.start.getTime())[0]
 }
 
+/** @deprecated Prefer stripAllLnr + recomputeLocalNightRests */
 export function stripLnrTouching(
   events: DutyEvent[],
   dutyStart: Date,
