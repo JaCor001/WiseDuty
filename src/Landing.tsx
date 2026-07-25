@@ -39,9 +39,10 @@ const FEATURES = [
   },
 ] as const
 
-function useRevealOnScroll<T extends HTMLElement>() {
+/** Spotlight when a feature sits in the viewport center band; shrinks again when you scroll past. */
+function useFeatureSpotlight<T extends HTMLElement>() {
   const ref = useRef<T | null>(null)
-  const [visible, setVisible] = useState(false)
+  const [active, setActive] = useState(false)
 
   useEffect(() => {
     const el = ref.current
@@ -49,19 +50,20 @@ function useRevealOnScroll<T extends HTMLElement>() {
 
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting) {
-          setVisible(true)
-          observer.unobserve(el)
-        }
+        setActive(entry.isIntersecting)
       },
-      { threshold: 0.35, rootMargin: '0px 0px -8% 0px' },
+      {
+        // Middle band of the viewport — only the “shining” feature is active
+        rootMargin: '-28% 0px -28% 0px',
+        threshold: [0, 0.15, 0.35, 0.55, 0.75, 1],
+      },
     )
 
     observer.observe(el)
     return () => observer.disconnect()
   }, [])
 
-  return { ref, visible }
+  return { ref, active }
 }
 
 function FeatureMoment({
@@ -73,12 +75,12 @@ function FeatureMoment({
   title: string
   detail: string
 }) {
-  const { ref, visible } = useRevealOnScroll<HTMLElement>()
+  const { ref, active } = useFeatureSpotlight<HTMLElement>()
 
   return (
     <article
       ref={ref}
-      className={`feature-moment ${visible ? 'is-visible' : ''}`}
+      className={`feature-moment ${active ? 'is-active' : ''}`}
       style={{ ['--feature-i' as string]: index }}
     >
       <div className="feature-moment-inner">
@@ -86,7 +88,7 @@ function FeatureMoment({
           {String(index + 1).padStart(2, '0')}
         </span>
         <h2 className="feature-moment-title">{title}</h2>
-        <div className="feature-moment-detail" aria-hidden={!visible}>
+        <div className="feature-moment-detail" aria-hidden={!active}>
           <div className="feature-moment-line" aria-hidden="true" />
           <p>{detail}</p>
         </div>
