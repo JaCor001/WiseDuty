@@ -1,10 +1,9 @@
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
-import { useSettings } from './features/settings/SettingsContext'
+import ThemeToggle from './shared/ui/ThemeToggle'
 
 function Signup() {
-  const { darkMode, toggleDarkMode } = useSettings()
   const [message, setMessage] = useState('')
 
   const handleSubmit = (e: FormEvent) => {
@@ -37,19 +36,14 @@ function Signup() {
           <Link to="/" className="logo-placeholder">
             (LOGO)
           </Link>
-          <nav>
+          <nav className="header-center">
             <Link to="/calendar">Calendar</Link>
             <Link to="/login">Login</Link>
             <Link to="/">Home</Link>
-            <button
-              className="theme-toggle"
-              aria-label="Toggle dark mode"
-              type="button"
-              onClick={toggleDarkMode}
-            >
-              {darkMode ? '☀️' : '🌙'}
-            </button>
           </nav>
+          <div className="header-actions">
+            <ThemeToggle />
+          </div>
         </div>
       </header>
 

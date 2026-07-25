@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from 'react'
 import { Link } from 'react-router-dom'
 import './Calendar.css'
 import './App.css'
@@ -37,15 +44,25 @@ import {
 } from './domain/time'
 import { useSettings } from './features/settings/SettingsContext'
 import { scheduleTravelRestReminders } from './shared/notifications'
-import { loadEvents, saveEvents } from './shared/storage'
+import {
+  clearDeletedEvents,
+  loadDeletedEvents,
+  loadEvents,
+  mergeIntoDeletedBin,
+  mergeRestoredEvents,
+  partitionEvents,
+  saveDeletedEvents,
+  saveEvents,
+} from './shared/storage'
 import FreeTimeInput from './shared/ui/FreeTimeInput'
 import SettingsPanel from './shared/ui/SettingsPanel'
 import TimeZoneSelector from './shared/ui/TimeZoneSelector'
+import ThemeToggle from './shared/ui/ThemeToggle'
+import { IconClose, IconSettings } from './shared/ui/icons'
 
 function Calendar() {
   const {
     darkMode,
-    toggleDarkMode,
     timeFormat,
     regulator,
     acclTZ,
@@ -58,6 +75,9 @@ function Calendar() {
   const [currentDate, setCurrentDate] = useState(() => new Date())
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [events, setEvents] = useState<DutyEvent[]>(() => loadEvents())
+  const [deletedEventCount, setDeletedEventCount] = useState(
+    () => loadDeletedEvents().length,
+  )
   const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skipNextPersist = useRef(true)
   const [showMenu, setShowMenu] = useState(false)
@@ -74,7 +94,6 @@ function Calendar() {
   const [animating, setAnimating] = useState(false)
   const [showRestDetails, setShowRestDetails] = useState(false)
   const [selectedRest, setSelectedRest] = useState<DutyEvent | null>(null)
-  const [showHamburgerMenu, setShowHamburgerMenu] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [maxDutyResult, setMaxDutyResult] = useState('')
   const [validationMessage, setValidationMessage] = useState('')
@@ -249,6 +268,46 @@ function Calendar() {
   const selectDate = (date: Date) => {
     setSelectedDate(date)
     setMenuDate(date)
+  }
+
+  const clearDaySelection = () => {
+    setSelectedDate(null)
+    setMenuDate(null)
+    setShowMenu(false)
+  }
+
+  /**
+   * Clicking empty chrome (not a day cell, panel, or control) closes the
+   * day-details strip and clears selection.
+   */
+  const handleCalendarBackgroundClick = (
+    e: ReactMouseEvent<HTMLElement>,
+  ) => {
+    const target = e.target as Element | null
+    if (!target) return
+    if (
+      target.closest(
+        [
+          '.day',
+          '.day-details',
+          '.slide-menu',
+          '.site-header',
+          '.month-header',
+          '.modal-content',
+          '.nav-prev',
+          '.nav-next',
+          'button',
+          'a',
+          'input',
+          'select',
+          'textarea',
+          'label',
+        ].join(','),
+      )
+    ) {
+      return
+    }
+    clearDaySelection()
   }
 
   const handleClick = (date: Date) => {
@@ -575,6 +634,7 @@ function Calendar() {
     <>
       <div
         className={`calendar ${darkMode ? 'dark' : 'light'} ${animating ? 'animating' : ''}`}
+        onClick={handleCalendarBackgroundClick}
       >
         <div className="auth-backdrop" aria-hidden="true">
           <div className="bg-video-blur">
@@ -583,47 +643,36 @@ function Calendar() {
           <div className="backdrop-overlay" />
         </div>
         <header className="site-header calendar-header">
-          <div className="nav-container" style={{ width: '100%' }}>
+          <div className="nav-container">
             <Link to="/" className="logo-placeholder">
               (LOGO)
             </Link>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-              <h2 style={{ margin: 0 }}>Calendar</h2>
+            <div className="header-center">
+              <h2 className="header-title">Calendar</h2>
               <Link to="/signup">Signup</Link>
               <Link to="/login">Login</Link>
             </div>
             <div className="header-buttons">
-              <button type="button" onClick={() => setShowSettings(true)}>
-                ⚙️
-              </button>
-              <button type="button" onClick={() => setShowHamburgerMenu(true)}>
-                ☰
-              </button>
               <button
                 type="button"
-                className="theme-toggle"
-                onClick={toggleDarkMode}
+                className="settings-button"
+                aria-label="Settings"
+                onClick={() => setShowSettings(true)}
               >
-                {darkMode ? '☀️' : '🌙'}
+                <IconSettings />
               </button>
+              <ThemeToggle />
             </div>
           </div>
         </header>
         <div className="calendar-page-container">
           <div className="month-header">
-            <h1
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                margin: 0,
-              }}
-            >
+            <h1 className="month-title">
               {currentDate > minMonth && (
                 <button
                   type="button"
                   className="nav-prev"
-                  style={{ marginRight: '1rem' }}
+                  aria-label="Previous month"
                   onClick={() => {
                     const newDate = new Date(
                       currentDate.getFullYear(),
@@ -640,13 +689,7 @@ function Calendar() {
                   &#x00AB;
                 </button>
               )}
-              <span
-                style={{
-                  minWidth: '10rem',
-                  textAlign: 'center',
-                  display: 'inline-block',
-                }}
-              >
+              <span className="month-label">
                 {currentDate.toLocaleDateString('en-US', {
                   month: 'long',
                   year: 'numeric',
@@ -656,7 +699,7 @@ function Calendar() {
                 <button
                   type="button"
                   className="nav-next"
-                  style={{ marginLeft: '1rem' }}
+                  aria-label="Next month"
                   onClick={() => {
                     const newDate = new Date(
                       currentDate.getFullYear(),
@@ -778,56 +821,97 @@ function Calendar() {
             </div>
           </div>
           {selectedDate && (
-            <div className="day-details">
-              <h3>{selectedDate.toDateString()}</h3>
-              <p>
-                Events:{' '}
+            <div className="day-details" role="region" aria-label="Day details">
+              <div className="day-details-header">
+                <h3>{selectedDate.toDateString()}</h3>
+                <button
+                  type="button"
+                  className="day-details-close"
+                  aria-label="Close day details"
+                  onClick={() => clearDaySelection()}
+                >
+                  <IconClose size={18} />
+                </button>
+              </div>
+              <p className="day-details-events">
+                <span className="day-details-events-label">Events</span>
                 {events
                   .filter(
                     (e) =>
                       e.start.toDateString() === selectedDate.toDateString() ||
                       (e.start < selectedDate &&
-                        e.end >
-                          startOfLocalDay(selectedDate)),
+                        e.end > startOfLocalDay(selectedDate)),
                   )
                   .map((e) => e.title)
                   .join(', ') || 'None'}
               </p>
-              <div className="actions">
-                {getDayActions(selectedDate).map((action) => (
-                  <button
-                    type="button"
-                    key={action}
-                    onClick={
-                      action === 'Add Duty'
-                        ? handleAddDuty
-                        : action === 'Edit Duty'
-                          ? handleEditDuty
-                          : action === 'Delete Duty'
-                            ? handleDeleteDuty
-                            : () => alert(action)
-                    }
-                  >
-                    {action}
-                  </button>
-                ))}
+              <div className="day-details-actions">
+                {getDayActions(selectedDate).map((action) => {
+                  const isDelete = action === 'Delete Duty'
+                  const isPrimary =
+                    action === 'Add Duty' || action === 'Edit Duty'
+                  return (
+                    <button
+                      type="button"
+                      key={action}
+                      className={
+                        isDelete
+                          ? 'day-details-btn day-details-btn-danger'
+                          : isPrimary
+                            ? 'day-details-btn day-details-btn-primary'
+                            : 'day-details-btn day-details-btn-secondary'
+                      }
+                      onClick={
+                        action === 'Add Duty'
+                          ? handleAddDuty
+                          : action === 'Edit Duty'
+                            ? handleEditDuty
+                            : action === 'Delete Duty'
+                              ? handleDeleteDuty
+                              : () => alert(action)
+                      }
+                    >
+                      {action}
+                    </button>
+                  )
+                })}
               </div>
-              <button type="button" onClick={() => setSelectedDate(null)}>
-                Close
-              </button>
             </div>
           )}
 
           {showMenu && menuDate && (
-            <div className="modal">
-              <div className="modal-content">
-                <h3>Options for {menuDate.toDateString()}</h3>
-                <button type="button" onClick={handleAddDuty}>
-                  Add Duty
-                </button>
-                <button type="button" onClick={() => setShowMenu(false)}>
-                  Cancel
-                </button>
+            <div
+              className="modal"
+              onClick={() => {
+                clearDaySelection()
+              }}
+            >
+              <div
+                className="modal-content day-menu-modal"
+                onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-label={`Options for ${menuDate.toDateString()}`}
+              >
+                <div className="day-details-header">
+                  <h3>{menuDate.toDateString()}</h3>
+                  <button
+                    type="button"
+                    className="day-details-close"
+                    aria-label="Close"
+                    onClick={() => clearDaySelection()}
+                  >
+                    <IconClose size={18} />
+                  </button>
+                </div>
+                <div className="day-details-actions">
+                  <button
+                    type="button"
+                    className="day-details-btn day-details-btn-primary"
+                    onClick={handleAddDuty}
+                  >
+                    Add Duty
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -957,7 +1041,55 @@ function Calendar() {
             </div>
           )}
 
-          {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+          {showSettings && (
+            <SettingsPanel
+              onClose={() => setShowSettings(false)}
+              deleteMonthLabel={currentDate.toLocaleDateString('en-US', {
+                month: 'long',
+                year: 'numeric',
+              })}
+              deletedEventCount={deletedEventCount}
+              onDeleteEvents={(scope) => {
+                // Snapshot current events once (not inside setState — avoids Strict Mode double I/O)
+                const prev = events
+                const monthStart = new Date(
+                  currentDate.getFullYear(),
+                  currentDate.getMonth(),
+                  1,
+                )
+                const monthEnd = new Date(
+                  currentDate.getFullYear(),
+                  currentDate.getMonth() + 1,
+                  1,
+                )
+                const predicate =
+                  scope === 'all'
+                    ? () => true
+                    : (e: DutyEvent) =>
+                        e.start >= monthStart && e.start < monthEnd
+
+                const { kept, removed } = partitionEvents(prev, predicate)
+                if (removed.length === 0) return
+
+                const nextDeleted = mergeIntoDeletedBin(
+                  loadDeletedEvents(),
+                  removed,
+                )
+                saveDeletedEvents(nextDeleted)
+                setEvents(kept)
+                setDeletedEventCount(nextDeleted.length)
+              }}
+              onRestoreDeletedEvents={() => {
+                // Read bin once, then update state purely — never clear storage inside setState
+                const bin = loadDeletedEvents()
+                if (bin.length === 0) return
+
+                setEvents((prev) => mergeRestoredEvents(prev, bin))
+                clearDeletedEvents()
+                setDeletedEventCount(0)
+              }}
+            />
+          )}
         </div>
       </div>
       {showRestDetails && selectedRest && (
@@ -1008,48 +1140,6 @@ function Calendar() {
                 OK
               </button>
             </div>
-          </div>
-        </div>
-      )}
-      {showHamburgerMenu && (
-        <div
-          className="modal-overlay"
-          onClick={() => setShowHamburgerMenu(false)}
-        >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Menu</h3>
-            <button
-              type="button"
-              onClick={() => {
-                const monthStart = new Date(
-                  currentDate.getFullYear(),
-                  currentDate.getMonth(),
-                  1,
-                )
-                const monthEnd = new Date(
-                  currentDate.getFullYear(),
-                  currentDate.getMonth() + 1,
-                  1,
-                )
-                if (
-                  confirm(
-                    'Are you sure you want to delete all events in the current month?',
-                  )
-                ) {
-                  setEvents((prev) =>
-                    prev.filter(
-                      (e) => e.start < monthStart || e.start >= monthEnd,
-                    ),
-                  )
-                  setShowHamburgerMenu(false)
-                }
-              }}
-            >
-              Delete all events
-            </button>
-            <button type="button" onClick={() => setShowHamburgerMenu(false)}>
-              Close
-            </button>
           </div>
         </div>
       )}

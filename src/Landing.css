@@ -1,0 +1,640 @@
+/* ==========================================================================
+   Landing — scrollable presentation + pinned brand header
+   ========================================================================== */
+
+/* Allow document scrolling on the landing route */
+html.landing-scroll,
+body.landing-scroll,
+html.landing-scroll #root {
+  height: auto !important;
+  max-height: none !important;
+  min-height: 100%;
+  overflow-x: clip;
+  overflow-y: auto !important;
+}
+
+.landing-presentation {
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--bg-primary);
+  color: var(--text-color);
+  position: relative;
+  /* Do not use overflow:hidden here — it breaks fixed/sticky headers */
+}
+
+.landing-ambient {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(
+      ellipse 70% 50% at 50% -10%,
+      color-mix(in srgb, var(--primary-color) 14%, transparent),
+      transparent 55%
+    ),
+    radial-gradient(
+      ellipse 50% 40% at 100% 40%,
+      color-mix(in srgb, var(--day-blue-color) 8%, transparent),
+      transparent 50%
+    ),
+    var(--bg-primary);
+}
+
+/* Content stacks above ambient art — never force position on the fixed header */
+.landing-presentation > main,
+.landing-presentation > footer {
+  position: relative;
+  z-index: 1;
+}
+
+/* ---------- Fixed header: becomes the brand after hero logo scrolls away ---------- */
+
+.landing-fixed-header {
+  /* Must stay fixed — do not let parent rules set position: relative on this node */
+  position: fixed !important;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  padding: 0.55rem var(--page-pad, 1.25rem);
+  pointer-events: none; /* tools re-enable below */
+  transition: background-color 0.25s ease, border-color 0.25s ease,
+    box-shadow 0.25s ease, padding 0.25s ease;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+}
+
+.landing-fixed-header.is-pinned {
+  pointer-events: auto;
+  background: color-mix(in srgb, var(--card-bg) 90%, transparent);
+  backdrop-filter: blur(14px) saturate(1.1);
+  border-bottom-color: var(--border-color);
+  box-shadow: var(--shadow-sm);
+  padding-bottom: 0.7rem;
+}
+
+.landing-fixed-inner {
+  max-width: var(--page-max, 1120px);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.landing-fixed-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.25rem;
+}
+
+.landing-fixed-brand-slot {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  /* Span center of full header width under tools */
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.landing-fixed-header.is-pinned .landing-fixed-brand-slot {
+  pointer-events: auto;
+}
+
+.landing-fixed-brand {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text-color);
+  text-decoration: none;
+  opacity: 0;
+  transform: translateY(6px) scale(0.96);
+  transition: opacity 0.28s cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.landing-fixed-header.is-pinned .landing-fixed-brand {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.landing-fixed-brand:hover {
+  color: var(--primary-color);
+  text-decoration: none;
+}
+
+.landing-fixed-tools {
+  grid-column: 2;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  pointer-events: auto;
+  /* Always tappable, even when header is "is-top" */
+  background: color-mix(in srgb, var(--card-bg) 70%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  border-radius: var(--radius-pill, 999px);
+  padding: 0.15rem 0.25rem 0.15rem 0.35rem;
+}
+
+.landing-fixed-header.is-pinned .landing-fixed-tools {
+  background: transparent;
+  border-color: transparent;
+  backdrop-filter: none;
+  padding: 0;
+}
+
+.landing-nav-link {
+  display: none;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.88rem;
+  font-weight: 500;
+  padding: 0.35rem 0.55rem;
+  border-radius: var(--radius-sm, 8px);
+}
+
+.landing-nav-link:hover {
+  color: var(--text-color);
+  background: var(--hover-bg);
+  text-decoration: none;
+}
+
+@media (min-width: 720px) {
+  .landing-nav-link {
+    display: inline-flex;
+  }
+}
+
+.landing-fixed-cta-slot {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transform: translateY(-4px);
+  transition: max-height 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.25s ease, transform 0.25s ease;
+}
+
+.landing-fixed-header.is-pinned .landing-fixed-cta-slot {
+  max-height: 3.5rem;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.landing-header-cta {
+  padding: 0.45rem 1.2rem;
+  font-size: 0.88rem;
+  border-radius: var(--radius-pill, 999px);
+  box-shadow: none;
+}
+
+.landing-header-cta:hover {
+  transform: none;
+}
+
+/* ---------- Hero ---------- */
+
+.landing-hero {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5.5rem var(--page-pad, 1.25rem) 3.5rem;
+  text-align: center;
+}
+
+.landing-hero-content {
+  max-width: 40rem;
+  margin: 0 auto;
+  animation: landing-hero-in 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.landing-eyebrow {
+  margin: 0 0 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.landing-hero-logo {
+  margin: 0 0 1rem;
+  font-size: clamp(3rem, 10vw, 5rem);
+  font-weight: 750;
+  letter-spacing: -0.045em;
+  line-height: 1.05;
+  color: var(--text-color);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+/* Soft handoff: fade hero logo as it becomes the pinned header brand */
+.landing-presentation.logo-pinned .landing-hero-logo {
+  opacity: 0.18;
+  transform: scale(0.98);
+}
+
+.landing-hero-tagline {
+  margin: 0 auto 1.75rem;
+  max-width: 36rem;
+  font-size: clamp(1.05rem, 2.4vw, 1.2rem);
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.landing-hero-tagline .hook-muted {
+  opacity: 0.55;
+  color: var(--text-color);
+  font-weight: 500;
+}
+
+/* Keep "color-coded clarity" on one line */
+.landing-color-coded {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.12rem;
+  white-space: nowrap;
+  vertical-align: middle;
+  max-width: 100%;
+}
+
+.landing-color-coded-hyphen {
+  color: var(--text-secondary);
+  font-weight: 600;
+  padding: 0 0.02rem;
+}
+
+/* Color-coded pills (shared tokens from App.css) */
+.landing-hero-tagline .pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.08rem 0.42rem;
+  margin: 0;
+  border-radius: var(--radius-pill, 999px);
+  font-weight: 650;
+  font-size: 0.95em;
+  line-height: 1.25;
+  border: 1px solid transparent;
+  vertical-align: baseline;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.landing-hero-tagline .pill-red {
+  background: var(--day-red-bg);
+  color: var(--day-red-color);
+  border-color: color-mix(in srgb, var(--day-red-color) 30%, transparent);
+}
+
+.landing-hero-tagline .pill-amber {
+  background: var(--day-rest-bg, var(--day-amber-bg));
+  color: var(--day-rest-color, var(--day-amber-color));
+  border-color: color-mix(
+    in srgb,
+    var(--day-rest-color, var(--day-amber-color)) 30%,
+    transparent
+  );
+}
+
+.landing-hero-tagline .pill-blue {
+  background: var(--day-blue-bg);
+  color: var(--day-blue-color);
+  border-color: color-mix(in srgb, var(--day-blue-color) 30%, transparent);
+}
+
+.landing-hero-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.landing-scroll-cue {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius-sm, 8px);
+}
+
+.landing-scroll-cue:hover {
+  color: var(--primary-color);
+  background: var(--hover-bg);
+}
+
+.landing-scroll-chevron {
+  display: inline-block;
+  animation: landing-bounce 1.6s ease-in-out infinite;
+}
+
+/* ---------- Features (scroll spotlight, no cards) ---------- */
+
+.landing-features {
+  padding: 0.5rem 0 4rem;
+}
+
+.landing-features-intro {
+  max-width: 36rem;
+  margin: 0 auto;
+  padding: 3rem var(--page-pad, 1.25rem) 1.5rem;
+  text-align: center;
+}
+
+.landing-features-intro h2 {
+  margin: 0 0 0.5rem;
+  font-size: clamp(1.5rem, 3.5vw, 2rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text-color);
+}
+
+.landing-features-intro p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.feature-moment {
+  min-height: min(88dvh, 42rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3.5rem var(--page-pad, 1.25rem);
+}
+
+.feature-moment-inner {
+  width: min(48rem, 100%);
+  margin: 0 auto;
+  text-align: center;
+  /* No boxes — pure typography stage */
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  /* Resting state: compact + quiet; expands when centered */
+  opacity: 0.28;
+  transform: scale(0.78);
+  filter: blur(0.4px);
+  transition:
+    opacity 0.75s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.85s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.7s ease;
+  will-change: transform, opacity;
+}
+
+.feature-moment.is-active .feature-moment-inner {
+  opacity: 1;
+  transform: scale(1.06);
+  filter: blur(0);
+}
+
+.feature-moment-index {
+  display: block;
+  font-size: clamp(0.7rem, 1.4vw, 0.8rem);
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--primary-color);
+  margin-bottom: 1.1rem;
+  opacity: 0.55;
+  transform: translateY(6px);
+  transition:
+    opacity 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.05s,
+    transform 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.05s,
+    letter-spacing 0.6s ease;
+}
+
+.feature-moment.is-active .feature-moment-index {
+  opacity: 1;
+  transform: translateY(0);
+  letter-spacing: 0.22em;
+}
+
+.feature-moment-title {
+  margin: 0 auto;
+  max-width: 18ch;
+  font-size: clamp(1.55rem, 4.6vw, 2.85rem);
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  line-height: 1.18;
+  color: var(--text-color);
+  transition: color 0.4s ease;
+}
+
+.feature-moment:not(.is-active) .feature-moment-title {
+  color: color-mix(in srgb, var(--text-color) 72%, var(--text-secondary));
+}
+
+.feature-moment-detail {
+  margin-top: 1.5rem;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(18px) scale(0.96);
+  transition:
+    max-height 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.08s,
+    transform 0.65s cubic-bezier(0.22, 1, 0.36, 1) 0.06s;
+}
+
+.feature-moment.is-active .feature-moment-detail {
+  max-height: 14rem;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.feature-moment-line {
+  width: 4.5rem;
+  height: 2px;
+  margin: 0 auto 1.15rem;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--primary-color) 85%, white),
+    transparent
+  );
+  transform: scaleX(0.15);
+  opacity: 0.4;
+  transition:
+    transform 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.12s,
+    opacity 0.5s ease 0.12s;
+}
+
+.feature-moment.is-active .feature-moment-line {
+  transform: scaleX(1);
+  opacity: 1;
+}
+
+.feature-moment-detail p {
+  margin: 0 auto;
+  max-width: 36rem;
+  font-size: clamp(1rem, 2.1vw, 1.15rem);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+/* ---------- Video ---------- */
+
+.landing-video-section {
+  padding: 2rem var(--page-pad, 1.25rem) 4rem;
+}
+
+.landing-video-inner {
+  max-width: 48rem;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.landing-video-inner h2 {
+  margin: 0 0 0.4rem;
+  font-size: clamp(1.45rem, 3vw, 1.85rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.landing-video-caption {
+  margin: 0 0 1.25rem;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.landing-video-frame {
+  width: 100%;
+  margin: 0 auto 1.5rem;
+  border-radius: var(--radius-lg, 16px);
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-md);
+}
+
+.landing-video-placeholder {
+  aspect-ratio: 16 / 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  background:
+    radial-gradient(
+      circle at 50% 40%,
+      color-mix(in srgb, var(--primary-color) 12%, transparent),
+      transparent 55%
+    ),
+    var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.landing-video-play {
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--card-bg) 80%, transparent);
+  border: 1px solid var(--border-color);
+  color: var(--primary-color);
+  font-size: 0.95rem;
+  padding-left: 0.15rem;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------- Footer ---------- */
+
+.landing-footer {
+  padding: 1.25rem var(--page-pad, 1.25rem) 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.landing-footer p {
+  margin: 0;
+}
+
+/* ---------- Motion ---------- */
+
+@keyframes landing-hero-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes landing-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-hero-content,
+  .feature-moment-inner,
+  .feature-moment-index,
+  .feature-moment-title,
+  .feature-moment-detail,
+  .feature-moment-line,
+  .landing-scroll-chevron,
+  .landing-fixed-brand,
+  .landing-fixed-cta-slot {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .feature-moment .feature-moment-inner {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+
+  .feature-moment-index,
+  .feature-moment-title,
+  .feature-moment-detail {
+    opacity: 1;
+    transform: none;
+    max-height: none;
+  }
+
+  .feature-moment-line {
+    transform: none;
+    opacity: 1;
+  }
+
+  .landing-presentation.logo-pinned .landing-hero-logo {
+    opacity: 1;
+    transform: none;
+  }
+}

@@ -1,19 +1,19 @@
 .version-badge {
   position: fixed;
-  right: 0.65rem;
-  bottom: 0.65rem;
+  right: 0.75rem;
+  bottom: 0.75rem;
   z-index: 9999;
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
   max-width: min(90vw, 22rem);
-  padding: 0.28rem 0.55rem;
-  border-radius: 999px;
-  border: 1px solid var(--border-color, #444);
-  background: color-mix(in srgb, var(--card-bg, #1e1e1e) 88%, transparent);
-  backdrop-filter: blur(8px);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
-  font-size: 0.72rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--card-bg) 92%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-sm, none);
+  font-size: 0.7rem;
   line-height: 1.2;
   pointer-events: none;
   user-select: none;
