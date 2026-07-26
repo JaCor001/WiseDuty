@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { formatTimeDisplay, parseFlexibleTime } from './time'
+import {
+  addDaysToDateInputValue,
+  formatTimeDisplay,
+  isOvernightDutyPeriod,
+  overnightAutoEndDate,
+  parseFlexibleTime,
+  parseHHmmToMinutes,
+} from './time'
 
 describe('parseFlexibleTime', () => {
   it('parses 24h digit blocks', () => {
@@ -32,5 +39,38 @@ describe('parseFlexibleTime', () => {
     expect(parseFlexibleTime('abc')).toBeNull()
     expect(parseFlexibleTime('2560')).toBeNull()
     expect(parseFlexibleTime('12:99')).toBeNull()
+  })
+})
+
+describe('overnight duty helpers', () => {
+  it('parses HH:mm to minutes', () => {
+    expect(parseHHmmToMinutes('22:30')).toBe(22 * 60 + 30)
+    expect(parseHHmmToMinutes('bad')).toBeNull()
+  })
+
+  it('adds days to date input values', () => {
+    expect(addDaysToDateInputValue('2024-06-10', 1)).toBe('2024-06-11')
+    expect(addDaysToDateInputValue('2024-06-30', 1)).toBe('2024-07-01')
+  })
+
+  it('auto end date only when end clock is before start and end still same day', () => {
+    expect(
+      overnightAutoEndDate('2024-06-10', '22:00', '2024-06-10', '06:00'),
+    ).toBe('2024-06-11')
+    expect(
+      overnightAutoEndDate('2024-06-10', '22:00', '2024-06-11', '06:00'),
+    ).toBeNull()
+    expect(
+      overnightAutoEndDate('2024-06-10', '08:00', '2024-06-10', '16:00'),
+    ).toBeNull()
+  })
+
+  it('detects overnight when end day is later or clock crosses midnight', () => {
+    expect(
+      isOvernightDutyPeriod('2024-06-10', '22:00', '2024-06-11', '06:00'),
+    ).toBe(true)
+    expect(
+      isOvernightDutyPeriod('2024-06-10', '08:00', '2024-06-10', '16:00'),
+    ).toBe(false)
   })
 })

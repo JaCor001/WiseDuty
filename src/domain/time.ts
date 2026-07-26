@@ -64,6 +64,33 @@ export function getMinutesInTZ(date: Date, tz: string): number {
 }
 
 /**
+ * UTC offset of IANA timezone `tz` at instant `date`, in minutes
+ * (local = UTC + offset; e.g. America/Toronto EDT → -240).
+ */
+export function getUtcOffsetMinutes(date: Date, tz: string): number {
+  const p = getZonedTimeParts(date, tz)
+  // Treat wall-clock parts as UTC; difference from the real instant is the offset.
+  const localAsUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, 0)
+  const truncated = date.getTime() - (date.getTime() % 60_000)
+  return (localAsUtc - truncated) / 60_000
+}
+
+/**
+ * Absolute difference in hours between two IANA zones at the same instant.
+ * Used for CAR 700.41(2) (>4 h local vs acclimatized).
+ */
+export function hoursBetweenTimeZones(
+  tzA: string,
+  tzB: string,
+  at: Date,
+): number {
+  if (tzA === tzB) return 0
+  const a = getUtcOffsetMinutes(at, tzA)
+  const b = getUtcOffsetMinutes(at, tzB)
+  return Math.abs(a - b) / 60
+}
+
+/**
  * Resolve the absolute instant when the wall clock in `tz` reads
  * `year-month-day hour:minute` (civil date in that zone).
  */
@@ -153,6 +180,63 @@ export function toLocalDateInputValue(date: Date): string {
   const m = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
   return `${y}-${m}-${d}`
+}
+
+/** Minutes from midnight for HH:mm, or null if invalid. */
+export function parseHHmmToMinutes(timeHHmm: string): number | null {
+  if (!timeHHmm || !timeHHmm.includes(':')) return null
+  const [hs, ms] = timeHHmm.split(':')
+  const h = Number(hs)
+  const m = Number(ms)
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null
+  return h * 60 + m
+}
+
+/** Add calendar days to a YYYY-MM-DD string (local civil arithmetic). */
+export function addDaysToDateInputValue(dateYmd: string, days: number): string {
+  const [y, mo, d] = dateYmd.split('-').map(Number)
+  const dt = new Date(y, (mo || 1) - 1, (d || 1) + days)
+  return toLocalDateInputValue(dt)
+}
+
+/**
+ * True when the end civil day is after the start civil day, or when the end
+ * clock is before the start clock (overnight crossing midnight).
+ */
+export function isOvernightDutyPeriod(
+  startDateYmd: string,
+  startHHmm: string,
+  endDateYmd: string,
+  endHHmm: string,
+): boolean {
+  if (!startDateYmd || !endDateYmd) return false
+  if (endDateYmd > startDateYmd) return true
+  if (endDateYmd < startDateYmd) return false
+  const sm = parseHHmmToMinutes(startHHmm)
+  const em = parseHHmmToMinutes(endHHmm)
+  if (sm == null || em == null) return false
+  return em < sm
+}
+
+/**
+ * If end clock is before start clock and end date is still the start day
+ * (or empty), return the next calendar day YYYY-MM-DD for auto-adjust.
+ * Otherwise null (no auto-change).
+ */
+export function overnightAutoEndDate(
+  startDateYmd: string,
+  startHHmm: string,
+  endDateYmd: string,
+  endHHmm: string,
+): string | null {
+  const sm = parseHHmmToMinutes(startHHmm)
+  const em = parseHHmmToMinutes(endHHmm)
+  if (sm == null || em == null || !startDateYmd) return null
+  if (em >= sm) return null
+  const effectiveEnd = endDateYmd || startDateYmd
+  if (effectiveEnd > startDateYmd) return null // user already picked a later day
+  return addDaysToDateInputValue(startDateYmd, 1)
 }
 
 /** Combine a calendar day + HH:mm into a local Date (no locale string parsing). */

@@ -99,9 +99,12 @@ export default function SettingsPanel({
       </label>
 
       <label>
-        Reference Time Zone
+        Home Base Time Zone
         <TimeZoneSelector value={referenceTZ} onChange={setReferenceTZ} />
       </label>
+      <p className="settings-section-hint">
+        Used for CAR 700.42 time-zone rest (away vs return to base).
+      </p>
 
       <label>
         Acclimatization Time Zone

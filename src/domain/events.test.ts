@@ -26,6 +26,17 @@ describe('maybeBuildLnrBetween / recomputeLocalNightRests', () => {
     expect(lnr!.isLocalNightRest).toBe(true)
     // Short gap → violated
     expect(lnr!.violated).toBe(true)
+    expect(lnr!.title).toMatch(/not met/i)
+    expect(lnr!.title).toMatch(/700\.4/)
+  })
+
+  it('labels compliant LNR without violation wording', () => {
+    const night = duty('n', at(2024, 6, 10, 22, 0), at(2024, 6, 11, 6, 0))
+    const early = duty('e', at(2024, 6, 13, 5, 0), at(2024, 6, 13, 12, 0))
+    const lnr = maybeBuildLnrBetween(night, early, 'TC', TZ, [night, early])
+    expect(lnr).not.toBeNull()
+    expect(lnr!.violated).toBe(false)
+    expect(lnr!.title).toBe('Local Night Rest (CAR 700.41)')
   })
 
   it('builds LNR for Early → Night', () => {

@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest'
 import {
   getMaxDutyFromTable,
   getMaxFdpHours,
+  getAbsoluteMaxFdpHours,
+  getUnaugmentedTableMaxFdpHours,
   getMinRestHours,
   getWeeklyDutyHours,
   wouldExceedWeeklyLimit,
   computeLocalNightRest,
   eventsOverlap,
+  formatLnrViolationMessage,
   isEarlyDuty,
   isLateDuty,
   isNightDuty,
@@ -73,6 +76,17 @@ describe('getMaxFdpHours by regulator', () => {
     expect(getMaxFdpHours('EASA', 8, 1, '<30')).toBe(13)
     expect(getMaxFdpHours('FAA', 8, 1, '<30')).toBe(14)
     expect(getMaxFdpHours('Australia', 8, 1, '<30')).toBe(14)
+  })
+})
+
+describe('getAbsoluteMaxFdpHours', () => {
+  it('is above unaugmented table max and regulator baselines', () => {
+    const tableMax = getUnaugmentedTableMaxFdpHours()
+    expect(tableMax).toBeGreaterThanOrEqual(13)
+    expect(getAbsoluteMaxFdpHours('TC')).toBeGreaterThanOrEqual(tableMax)
+    expect(getAbsoluteMaxFdpHours('TC')).toBeGreaterThanOrEqual(18)
+    expect(getAbsoluteMaxFdpHours('EASA')).toBeGreaterThanOrEqual(17)
+    expect(getAbsoluteMaxFdpHours('FAA')).toBeGreaterThanOrEqual(17)
   })
 })
 
@@ -328,6 +342,44 @@ describe('CAR 700.41 disruptive transitions', () => {
     )
     expect(isDisruptiveTransition(early, day, 'TC', TZ)).toBe(false)
   })
+
+  it('700.41(2): exempt when duty accl TZs differ by more than 4 hours', () => {
+    // Toronto (EDT UTC-4) vs London (BST UTC+1) = 5 h in June
+    const late = duty(
+      'l',
+      zonedWallTime('America/Toronto', 2024, 6, 10, 18, 0),
+      zonedWallTime('America/Toronto', 2024, 6, 11, 1, 0),
+      'America/Toronto',
+    )
+    const early = duty(
+      'e',
+      zonedWallTime('Europe/London', 2024, 6, 12, 5, 0),
+      zonedWallTime('Europe/London', 2024, 6, 12, 12, 0),
+      'Europe/London',
+    )
+    expect(isDisruptiveTransition(late, early, 'TC', 'America/Toronto')).toBe(
+      false,
+    )
+  })
+
+  it('700.41(2): still applies when accl TZs differ by 4 hours or less', () => {
+    // Toronto (EDT -4) vs Vancouver (PDT -7) = 3 h
+    const late = duty(
+      'l',
+      zonedWallTime('America/Toronto', 2024, 6, 10, 18, 0),
+      zonedWallTime('America/Toronto', 2024, 6, 11, 1, 0),
+      'America/Toronto',
+    )
+    const early = duty(
+      'e',
+      zonedWallTime('America/Vancouver', 2024, 6, 12, 5, 0),
+      zonedWallTime('America/Vancouver', 2024, 6, 12, 12, 0),
+      'America/Vancouver',
+    )
+    expect(isDisruptiveTransition(late, early, 'TC', 'America/Toronto')).toBe(
+      true,
+    )
+  })
 })
 
 describe('computeLocalNightRest (acclimatized LNR)', () => {
@@ -337,6 +389,8 @@ describe('computeLocalNightRest (acclimatized LNR)', () => {
     const r = computeLocalNightRest(prevEnd, nextStart, TZ, 12)
     expect(r.violated).toBe(true)
     expect(r.gapHours).toBeLessThan(12)
+    expect(r.reasons).toContain('short_rest')
+    expect(r.reasons).toContain('insufficient_night_window')
   })
 
   it('passes when gap includes ≥9h in 22:30–09:30 and ≥12h total', () => {
@@ -347,6 +401,7 @@ describe('computeLocalNightRest (acclimatized LNR)', () => {
     expect(r.gapHours).toBe(14)
     expect(r.nightWindowHours).toBeGreaterThanOrEqual(9)
     expect(r.violated).toBe(false)
+    expect(r.reasons).toEqual([])
   })
 
   it('fails when gap is long but misses local night window', () => {
@@ -357,6 +412,7 @@ describe('computeLocalNightRest (acclimatized LNR)', () => {
     expect(r.gapHours).toBe(13)
     expect(r.nightWindowHours).toBeLessThan(9)
     expect(r.violated).toBe(true)
+    expect(r.reasons).toEqual(['insufficient_night_window'])
   })
 
   it('does not use invented 00:30 / 07:30 hard gates', () => {
@@ -382,6 +438,16 @@ describe('computeLocalNightRest (acclimatized LNR)', () => {
     expect(r.violated).toBe(false)
     // Confirm zoned parts
     expect(getZonedTimeParts(prevEnd, tz).hour).toBe(20)
+  })
+
+  it('formatLnrViolationMessage distinguishes 700.40 vs 700.41', () => {
+    const msg = formatLnrViolationMessage(
+      ['short_rest', 'insufficient_night_window'],
+      { gapHours: 6, nightWindowHours: 4.5, minRestHours: 12 },
+    )
+    expect(msg).toMatch(/700\.40/)
+    expect(msg).toMatch(/700\.41/)
+    expect(msg).toMatch(/6\.0/)
   })
 })
 

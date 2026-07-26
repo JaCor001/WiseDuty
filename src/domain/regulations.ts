@@ -4,6 +4,7 @@ import {
   getHourInTZ,
   getMinutesInTZ,
   getZonedTimeParts,
+  hoursBetweenTimeZones,
   nextZonedWallTime,
   zonedWallTimeOnDay,
 } from './time'
@@ -175,6 +176,49 @@ export function getMaxFdpHours(
   return 14 // FAA / Australia baseline used in app today
 }
 
+/**
+ * Soft ceiling for form warnings: longest FDP still conceivably legal under the
+ * regime when stacking the most permissive provisions the app does not fully
+ * model (augmented crew + rest facilities, split duty extensions, ULR, UOC /
+ * commander discretion).
+ *
+ * Not a substitute for the sector/start-time table (`getMaxFdpHours`).
+ *
+ * Approximate sources:
+ * - TC CAR 700.60 Class 1 rest facility / multi-pilot augmentation (~18 h)
+ *   and 700.62 ultra-long-range operations (into the ~20 h range)
+ * - EASA ORO.FTL augmented + commander's discretion (~17–18 h)
+ * - FAA Part 117 augmented with Class 1 rest facility (~19 h)
+ * - CASA CAO 48.1 extended multi-crew operations (~18 h)
+ */
+export function getAbsoluteMaxFdpHours(regulator: Regulator): number {
+  switch (regulator) {
+    case 'TC':
+      return 20
+    case 'EASA':
+      return 18
+    case 'FAA':
+      return 19
+    case 'Australia':
+      return 18
+    default:
+      return 20
+  }
+}
+
+/** Highest value in the unaugmented CAR 705 table (for reference / tests). */
+export function getUnaugmentedTableMaxFdpHours(): number {
+  let max = 0
+  for (const avg of Object.keys(FDP_TABLE) as AvgSectorTime[]) {
+    for (const group of Object.values(FDP_TABLE[avg])) {
+      for (const hours of Object.values(group)) {
+        if (hours > max) max = hours
+      }
+    }
+  }
+  return max
+}
+
 export function getMinRestHours(regulator: Regulator): number {
   return regulator === 'TC' || regulator === 'EASA' ? 12 : 10
 }
@@ -235,7 +279,8 @@ export function getNightWindow(regulator: Regulator): {
   return { nightStart, nightEnd }
 }
 
-export type DutyMarker = 'E' | 'L' | 'N' | 'LNR'
+/** Calendar chips: duty classification + rest requirement markers. */
+export type DutyMarker = 'E' | 'L' | 'N' | 'LNR' | 'LNR2' | 'LNR3' | 'RR'
 
 function acclTZFor(event: DutyEvent, globalAcclTZ: string): string {
   return event.acclTZ || globalAcclTZ
@@ -340,9 +385,31 @@ export function dutyHasNightMarker(
 }
 
 /**
+ * CAR 700.41(2): disruptive-schedule LNR does not apply when the member is at a
+ * location whose local time differs by more than 4 hours from the last location
+ * where they were acclimatized.
+ *
+ * Without a separate “location TZ” field, we use each duty’s `acclTZ` as the best
+ * available zone reference: |offset(prev accl) − offset(next accl)| at the start
+ * of the next duty. Same zone → never exempt (typical home-base ops).
+ */
+export function isDisruptiveScheduleExempt(
+  previous: DutyEvent,
+  next: DutyEvent,
+  globalAcclTZ: string,
+): boolean {
+  const prevTz = acclTZFor(previous, globalAcclTZ)
+  const nextTz = acclTZFor(next, globalAcclTZ)
+  if (prevTz === nextTz) return false
+  // Evaluate at the later duty’s report time (when the member is “at” that location).
+  return hoursBetweenTimeZones(prevTz, nextTz, next.start) > 4
+}
+
+/**
  * CAR 700.41 disruptive schedule: LNR between (late|night)↔early transitions.
  * (a) late or night ends, then early begins
  * (b) early ends, then late or night begins
+ * Exempt under 700.41(2) when zone offset gap > 4 h (see isDisruptiveScheduleExempt).
  */
 export function isDisruptiveTransition(
   previous: DutyEvent,
@@ -351,6 +418,13 @@ export function isDisruptiveTransition(
   globalAcclTZ: string,
 ): boolean {
   if (previous.type !== 'duty' || next.type !== 'duty') return false
+
+  if (
+    regulator === 'TC' &&
+    isDisruptiveScheduleExempt(previous, next, globalAcclTZ)
+  ) {
+    return false
+  }
 
   const prevTz = acclTZFor(previous, globalAcclTZ)
   const nextTz = acclTZFor(next, globalAcclTZ)
@@ -390,8 +464,13 @@ export function getDutyMarkers(
   /** Optional YYYY-MM-DD in acclimatized TZ for the cell being rendered. */
   dayKeyAccl?: string,
 ): DutyMarker[] {
-  if (event.type === 'rest' && event.isLocalNightRest) {
-    return ['LNR']
+  if (event.type === 'rest') {
+    const nights = event.requiredLocalNights ?? 0
+    if (nights >= 3) return ['LNR3']
+    if (nights === 2) return ['LNR2']
+    if (event.isLocalNightRest || nights === 1) return ['LNR']
+    // Required clock rest (700.40 / 700.42 hours)
+    return ['RR']
   }
   if (event.type !== 'duty') return []
 
@@ -427,8 +506,23 @@ export type MarkerBarAnchor = 'start' | 'end' | 'center'
 export function markerBarAnchor(type: DutyMarker): MarkerBarAnchor {
   if (type === 'E') return 'start'
   if (type === 'L' || type === 'N') return 'end'
-  return 'center' // LNR
+  return 'center' // LNR / LNR2 / LNR3 / RR
 }
+
+/** Short chip label for calendar. */
+export function markerChipLabel(type: DutyMarker, violated?: boolean): string {
+  if (type === 'LNR') return violated ? 'LNR!' : 'LNR'
+  if (type === 'LNR2') return violated ? '2×LNR!' : '2×LNR'
+  if (type === 'LNR3') return violated ? '3×LNR!' : '3×LNR'
+  if (type === 'RR') return violated ? 'RR!' : 'RR'
+  return type
+}
+
+/** Why an auto LNR failed quality checks (700.40 / 700.41). */
+export type LnrViolationReason =
+  | 'short_rest'
+  | 'insufficient_night_window'
+  | 'duty_overlap'
 
 export interface LocalNightRestResult {
   start: Date
@@ -438,6 +532,7 @@ export interface LocalNightRestResult {
   nightWindowHours: number
   /** Total rest gap hours. */
   gapHours: number
+  reasons: LnrViolationReason[]
 }
 
 /**
@@ -486,17 +581,56 @@ export function computeLocalNightRest(
     (lnrEnd.getTime() - lnrStart.getTime()) / (1000 * 60 * 60)
   const nightWindowHours = bestLocalNightWindowHours(lnrStart, lnrEnd, tz)
 
-  let violated = false
-  if (gapHours < minRestHours) violated = true
-  if (nightWindowHours < 9) violated = true
+  const reasons: LnrViolationReason[] = []
+  if (gapHours < minRestHours) reasons.push('short_rest')
+  if (nightWindowHours < 9) reasons.push('insufficient_night_window')
 
   return {
     start: lnrStart,
     end: lnrEnd,
-    violated,
+    violated: reasons.length > 0,
     nightWindowHours,
     gapHours,
+    reasons,
   }
+}
+
+/** Human-readable LNR failure summary for alerts / tooltips. */
+export function formatLnrViolationMessage(
+  reasons: LnrViolationReason[],
+  opts?: { gapHours?: number; nightWindowHours?: number; minRestHours?: number },
+): string {
+  if (reasons.length === 0) {
+    return 'Local night rest meets CAR 700.41 requirements.'
+  }
+  const parts: string[] = []
+  if (reasons.includes('short_rest')) {
+    const min = opts?.minRestHours
+    const gap = opts?.gapHours
+    if (min != null && gap != null) {
+      parts.push(
+        `rest gap ${gap.toFixed(1)} h is shorter than the minimum ${min} h (CAR 700.40)`,
+      )
+    } else {
+      parts.push('rest gap is shorter than the minimum rest period (CAR 700.40)')
+    }
+  }
+  if (reasons.includes('insufficient_night_window')) {
+    const nw = opts?.nightWindowHours
+    if (nw != null) {
+      parts.push(
+        `only ${nw.toFixed(1)} h falls inside 22:30–09:30 acclimatized (need ≥9 h local night’s rest, CAR 700.41)`,
+      )
+    } else {
+      parts.push(
+        'less than 9 h falls inside 22:30–09:30 acclimatized (CAR 700.41 local night’s rest)',
+      )
+    }
+  }
+  if (reasons.includes('duty_overlap')) {
+    parts.push('another duty overlaps the rest gap')
+  }
+  return `Local night rest required but not met: ${parts.join('; ')}.`
 }
 
 export function eventsOverlap(

@@ -12,21 +12,24 @@ import './App.css'
 import type { AvgSectorTime, DutyEvent, RestType } from './domain/types'
 import { MAX_WEEKLY_DUTY_HOURS } from './domain/types'
 import {
-  buildRestEvent,
   createId,
   eventsOnLocalDay,
   findDutyOnDate,
   findDutiesOnDate,
+  recomputeAfterDutyChange,
   recomputeLocalNightRests,
   removeDutyAndRelated,
   restIdForDuty,
+  summarizeViolatedLnrs,
 } from './domain/events'
+import { explainMarker, type MarkerExplanation } from './domain/markers'
 import {
   eventsOverlap,
+  getAbsoluteMaxFdpHours,
   getDutyMarkers,
   getMaxFdpHours,
-  getMinRestHours,
   markerBarAnchor,
+  markerChipLabel,
   wouldExceedWeeklyLimit,
   type DutyMarker,
 } from './domain/regulations'
@@ -37,6 +40,8 @@ import {
   formatTimeDisplay,
   getHourInTZ,
   getZuluTimeDisplay,
+  isOvernightDutyPeriod,
+  overnightAutoEndDate,
   parseLocalDateTime,
   startOfLocalDay,
   toLocalDateInputValue,
@@ -65,11 +70,14 @@ function Calendar() {
     timeFormat,
     regulator,
     acclTZ,
+    referenceTZ,
     sectors,
     setSectors,
     avgSectorTime,
     setAvgSectorTime,
   } = useSettings()
+
+  const homeBaseTZ = referenceTZ || acclTZ
 
   const [currentDate, setCurrentDate] = useState(() => new Date())
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
@@ -87,15 +95,21 @@ function Calendar() {
   const [endTime, setEndTime] = useState('')
   const [endDate, setEndDate] = useState('')
   const [modalAcclTZ, setModalAcclTZ] = useState('')
+  const [modalStartTZ, setModalStartTZ] = useState('')
+  const [modalEndTZ, setModalEndTZ] = useState('')
   const [restType, setRestType] = useState<RestType>('12h')
   const [isEdit, setIsEdit] = useState(false)
   const [editEvent, setEditEvent] = useState<DutyEvent | null>(null)
   const [animating, setAnimating] = useState(false)
   const [showRestDetails, setShowRestDetails] = useState(false)
   const [selectedRest, setSelectedRest] = useState<DutyEvent | null>(null)
+  const [markerInfo, setMarkerInfo] = useState<MarkerExplanation | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [maxDutyResult, setMaxDutyResult] = useState('')
   const [validationMessage, setValidationMessage] = useState('')
+  /** Re-key end-date input to re-run blink animation after auto overnight adjust. */
+  const [endDateBlinkKey, setEndDateBlinkKey] = useState(0)
+  const [endDateShouldBlink, setEndDateShouldBlink] = useState(false)
 
   useEffect(() => {
     // Avoid rewriting localStorage on mount with an identical payload
@@ -111,6 +125,56 @@ function Calendar() {
       if (pressTimerRef.current) clearTimeout(pressTimerRef.current)
     }
   }, [])
+
+  // Overnight: if end clock is before start clock and end date is still the
+  // start day, roll end date to the next day and blink the date field.
+  // If the user already chose the next day, only show the overnight label.
+  useEffect(() => {
+    if (!showAddDuty || !addDutyDate || !startTime || !endTime) return
+    const startYmd = toLocalDateInputValue(addDutyDate)
+    const auto = overnightAutoEndDate(
+      startYmd,
+      startTime,
+      endDate,
+      endTime,
+    )
+    if (auto && auto !== endDate) {
+      setEndDate(auto)
+      setEndDateShouldBlink(true)
+      setEndDateBlinkKey((k) => k + 1)
+    }
+  }, [showAddDuty, addDutyDate, startTime, endTime, endDate])
+
+  useEffect(() => {
+    if (!endDateShouldBlink) return
+    const t = setTimeout(() => setEndDateShouldBlink(false), 1400)
+    return () => clearTimeout(t)
+  }, [endDateShouldBlink, endDateBlinkKey])
+
+  const isOvernightDuty = useMemo(() => {
+    if (!showAddDuty || !addDutyDate || !startTime || !endTime || !endDate) {
+      return false
+    }
+    return isOvernightDutyPeriod(
+      toLocalDateInputValue(addDutyDate),
+      startTime,
+      endDate,
+      endTime,
+    )
+  }, [showAddDuty, addDutyDate, startTime, endTime, endDate])
+
+  const longDutyPeriodWarning = useMemo(() => {
+    if (!showAddDuty || !addDutyDate || !startTime || !endTime || !endDate) {
+      return false
+    }
+    const start = combineLocalDateAndTime(addDutyDate, startTime)
+    const end = parseLocalDateTime(endDate, endTime)
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
+      return false
+    }
+    const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
+    return hours > getAbsoluteMaxFdpHours(regulator)
+  }, [showAddDuty, addDutyDate, startTime, endTime, endDate, regulator])
 
   const now = useMemo(() => new Date(), [])
   const minMonth = useMemo(
@@ -157,17 +221,12 @@ function Calendar() {
     const allMarkers: {
       type: DutyMarker
       eventId: string
+      event: DutyEvent
       left: number
       width: number
       barTop: string
+      violated?: boolean
     }[] = []
-
-    const markerTitle: Record<DutyMarker, string> = {
-      E: 'Early duty — starts 02:00–06:59 acclimatized',
-      L: 'Late duty — ends 00:00–01:59 acclimatized',
-      N: 'Night duty — starts 13:00–01:59 and ends after 01:59 acclimatized',
-      LNR: 'Local night rest',
-    }
 
     dayEvents.forEach((event) => {
       let barTop = '30%'
@@ -207,9 +266,11 @@ function Calendar() {
         allMarkers.push({
           type: marker,
           eventId: event.id,
+          event,
           left,
           width,
           barTop,
+          violated: event.violated,
         }),
       )
 
@@ -217,7 +278,7 @@ function Calendar() {
       allBars.push(
         <div
           key={`${event.id}-${dayStart.toISOString()}`}
-          className={`event-bar ${event.type}`}
+          className={`event-bar ${event.type}${event.violated ? ' violated' : ''}`}
           style={{ left: `${left}%`, width: `${width}%`, top: barTop }}
           title={event.title}
           onClick={(e) => {
@@ -237,44 +298,64 @@ function Calendar() {
 
     const markerElements = allMarkers.map((marker, index) => {
       const anchor = markerBarAnchor(marker.type)
-      const isLNR = marker.type === 'LNR'
-      // Sit just under the duty/rest bar this marker belongs to
-      const top = `calc(${marker.barTop} + clamp(6px, 1.1vh, 10px) + 2px)`
+      const restMarker =
+        marker.type === 'LNR' ||
+        marker.type === 'LNR2' ||
+        marker.type === 'LNR3' ||
+        marker.type === 'RR'
+      const isWide =
+        marker.type === 'LNR2' ||
+        marker.type === 'LNR3' ||
+        (marker.violated && restMarker)
+      const violatedClass = marker.violated && restMarker
+      const gap = 'var(--marker-gap, 6px)'
+      const chipW = isWide
+        ? 'var(--marker-chip-width-wide, 2.4em)'
+        : 'var(--marker-chip-width, 1.55em)'
+      const chipH = 'var(--marker-chip-height, 1.2em)'
+      const barH = 'clamp(6px, 1.1vh, 10px)'
 
-      // Concentric gap from .day: --marker-cell-inset / --marker-min-width.
-      // End-anchored L/N use translateX(-100%); short end-day bars (e.g. 00:25)
-      // still clear the left corner curve via clamp floor = inset + min width.
-      const inset = 'var(--marker-cell-inset, 5px)'
-      const minW = 'var(--marker-min-width, 1.25em)'
-      let leftStyle: string
-      let transform: string | undefined
+      const preferredTop = `calc(${marker.barTop} + ${barH} + 2px)`
+      const top = `clamp(${gap}, ${preferredTop}, calc(100% - ${gap} - ${chipH}))`
+
+      const barLeft = marker.left
+      const barRight = marker.left + marker.width
+      let preferredLeft: string
       if (anchor === 'start') {
-        // left edge of chip
-        leftStyle = `clamp(${inset}, ${marker.left}%, calc(100% - ${inset} - ${minW}))`
-        transform = undefined
+        preferredLeft = `${barLeft}%`
       } else if (anchor === 'end') {
-        // right edge of chip (before translateX(-100%))
-        leftStyle = `clamp(calc(${inset} + ${minW}), ${marker.left + marker.width}%, calc(100% - ${inset}))`
-        transform = 'translateX(-100%)'
+        preferredLeft = `calc(${barRight}% - ${chipW})`
       } else {
-        leftStyle = `clamp(calc(${inset} + ${minW} / 2), ${marker.left + marker.width / 2}%, calc(100% - ${inset} - ${minW} / 2))`
-        transform = 'translateX(-50%)'
+        preferredLeft = `calc(${barLeft + marker.width / 2}% - ${chipW} / 2)`
       }
+      const leftStyle = `clamp(${gap}, ${preferredLeft}, calc(100% - ${gap} - ${chipW}))`
+      const label = markerChipLabel(marker.type, marker.violated)
+      const explanation = explainMarker(
+        marker.type,
+        marker.event,
+        regulator,
+        acclTZ,
+        homeBaseTZ,
+      )
 
       return (
-        <span
+        <button
+          type="button"
           key={`${marker.eventId}-${marker.type}-${dayStart.toISOString()}-${index}`}
-          className={`marker marker-anchored ${marker.type}`}
+          className={`marker marker-anchored marker-button ${marker.type}${violatedClass ? ' LNR-violated' : ''}`}
           style={{
             top,
             left: leftStyle,
-            transform,
           }}
-          title={markerTitle[marker.type]}
-          aria-label={markerTitle[marker.type]}
+          title={`${explanation.label} — tap for definition`}
+          aria-label={`${explanation.label}. Tap for definition and why it applies.`}
+          onClick={(e) => {
+            e.stopPropagation()
+            setMarkerInfo(explanation)
+          }}
         >
-          {isLNR ? 'LNR' : marker.type}
-        </span>
+          {label}
+        </button>
       )
     })
 
@@ -366,6 +447,8 @@ function Calendar() {
         setEndDate(toLocalDateInputValue(duty.end))
         setEndTime(formatHHmm(duty.end))
         setModalAcclTZ(duty.acclTZ || acclTZ)
+        setModalStartTZ(duty.startTZ || duty.acclTZ || acclTZ)
+        setModalEndTZ(duty.endTZ || duty.acclTZ || acclTZ)
       }
     } else if (date.getMonth() !== currentDate.getMonth()) {
       setAnimating(true)
@@ -391,6 +474,7 @@ function Calendar() {
     setEditEvent(null)
     setValidationMessage('')
     setMaxDutyResult('')
+    setEndDateShouldBlink(false)
   }
 
   const handleAddDuty = () => {
@@ -410,11 +494,13 @@ function Calendar() {
     setEndDate(toLocalDateInputValue(event.end))
     setEndTime(formatHHmm(event.end))
     setModalAcclTZ(event.acclTZ || acclTZ)
+    setModalStartTZ(event.startTZ || event.acclTZ || acclTZ)
+    setModalEndTZ(event.endTZ || event.acclTZ || acclTZ)
     const restEvent = events.find((e) => e.id === restIdForDuty(event.id))
     if (restEvent) {
-      const restDuration =
-        (restEvent.end.getTime() - restEvent.start.getTime()) /
-        (1000 * 60 * 60)
+      const restDuration = restEvent.requiredRestHours
+        ?? (restEvent.end.getTime() - restEvent.start.getTime()) /
+          (1000 * 60 * 60)
       setRestType(restDuration === 10 ? '10+travel' : '12h')
     } else {
       setRestType('12h')
@@ -444,11 +530,14 @@ function Calendar() {
     setEndTime('')
     setEndDate('')
     setModalAcclTZ('')
+    setModalStartTZ('')
+    setModalEndTZ('')
     setRestType('12h')
     setIsEdit(false)
     setEditEvent(null)
     setValidationMessage('')
     setMaxDutyResult('')
+    setEndDateShouldBlink(false)
   }
 
   const handleSubmitDuty = () => {
@@ -474,10 +563,10 @@ function Calendar() {
 
     const duration = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
     const dutyAccl = modalAcclTZ || acclTZ
+    const dutyStartLoc = modalStartTZ || dutyAccl
+    const dutyEndLoc = modalEndTZ || dutyAccl
     const startHour = getHourInTZ(start, dutyAccl)
     const maxDuty = getMaxFdpHours(regulator, startHour, sectors, avgSectorTime)
-    const minRest = getMinRestHours(regulator)
-    const actualRestHours = restType === '10+travel' ? 10 : minRest
 
     if (duration > maxDuty) {
       setValidationMessage(
@@ -506,31 +595,26 @@ function Calendar() {
         start,
         end,
         acclTZ: dutyAccl,
+        startTZ: dutyStartLoc,
+        endTZ: dutyEndLoc,
         title: editEvent.title || 'Duty Period',
         type: 'duty',
       }
 
       setEvents((prev) => {
-        let next = prev.filter(
+        const without = prev.filter(
           (e) => e.id !== editEvent.id && e.id !== restIdForDuty(editEvent.id),
         )
-        next = [...next, updatedDuty]
-
-        // Rebuild required rest for this duty
-        const restEvent = buildRestEvent(
-          updatedDuty.id,
-          end,
-          actualRestHours,
+        const next = recomputeAfterDutyChange(
+          [...without, updatedDuty],
+          updatedDuty,
+          regulator,
+          homeBaseTZ,
+          dutyAccl,
           restType,
         )
-        next = [...next, restEvent]
-
-        // Full LNR recompute for all disruptive pairs (700.41)
-        next = recomputeLocalNightRests(next, regulator, dutyAccl)
-        const violatedLnr = next.some((e) => e.isLocalNightRest && e.violated)
-        if (violatedLnr) {
-          alert('Local night rest does not meet regulatory requirements.')
-        }
+        const lnrMsg = summarizeViolatedLnrs(next)
+        if (lnrMsg) alert(lnrMsg)
         return next
       })
 
@@ -578,19 +662,22 @@ function Calendar() {
       end,
       type: 'duty',
       acclTZ: dutyAccl,
+      startTZ: dutyStartLoc,
+      endTZ: dutyEndLoc,
       violated: overlapsRest,
     }
-    const restEvent = buildRestEvent(newId, end, actualRestHours, restType)
 
     setEvents((prev) => {
-      const next = recomputeLocalNightRests(
-        [...prev, newEvent, restEvent],
+      const next = recomputeAfterDutyChange(
+        [...prev, newEvent],
+        newEvent,
         regulator,
+        homeBaseTZ,
         dutyAccl,
+        restType,
       )
-      if (next.some((e) => e.isLocalNightRest && e.violated)) {
-        alert('Local night rest does not meet regulatory requirements.')
-      }
+      const lnrMsg = summarizeViolatedLnrs(next)
+      if (lnrMsg) alert(lnrMsg)
       return next
     })
 
@@ -603,6 +690,8 @@ function Calendar() {
         setEndDate(toLocalDateInputValue(newEvent.end))
         setEndTime(formatHHmm(newEvent.end))
         setModalAcclTZ(newEvent.acclTZ || acclTZ)
+        setModalStartTZ(newEvent.startTZ || acclTZ)
+        setModalEndTZ(newEvent.endTZ || acclTZ)
         setRestType('10+travel')
         setShowAddDuty(true)
         if ((result.hoursSinceRelease ?? 0) > 15) {
@@ -813,9 +902,14 @@ function Calendar() {
                         style={{ left: `${violationLeft}%`, bottom: '2px' }}
                         onClick={(e) => {
                           e.stopPropagation()
-                          alert(
-                            'Violation: Duty period overlaps with a rest period or LNR requirements not met.',
-                          )
+                          const lnrMsg = summarizeViolatedLnrs(dayEvents)
+                          if (lnrMsg) {
+                            alert(lnrMsg)
+                          } else {
+                            alert(
+                              'Violation: duty period overlaps a rest period, or rest requirements are not met.',
+                            )
+                          }
                         }}
                       >
                         ⚠️
@@ -943,13 +1037,35 @@ function Calendar() {
                   </span>
                 )}
               </label>
-              <label>
-                End Date:
+              <label className="end-date-label">
+                <span className="end-date-label-row">
+                  End Date:
+                  {isOvernightDuty && (
+                    <span className="overnight-duty-badge" aria-live="polite">
+                      (overnight duty)
+                    </span>
+                  )}
+                </span>
                 <input
+                  key={endDateBlinkKey}
                   type="date"
                   value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
+                  onChange={(e) => {
+                    setEndDate(e.target.value)
+                    setEndDateShouldBlink(false)
+                  }}
+                  className={
+                    endDateShouldBlink ? 'end-date-input end-date-blink' : 'end-date-input'
+                  }
+                  aria-describedby={
+                    isOvernightDuty ? 'overnight-duty-hint' : undefined
+                  }
                 />
+                {isOvernightDuty && (
+                  <span id="overnight-duty-hint" className="sr-only">
+                    Overnight duty: end date is after start date
+                  </span>
+                )}
               </label>
               <label>
                 End Time:
@@ -967,6 +1083,15 @@ function Calendar() {
                       endDate ? parseLocalDateTime(endDate, '00:00') : null,
                       timeFormat,
                     )}
+                  </span>
+                )}
+                {longDutyPeriodWarning && (
+                  <span
+                    className="long-duty-warning"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    Long duty period, check time and date
                   </span>
                 )}
               </label>
@@ -1002,7 +1127,29 @@ function Calendar() {
                 />
               </label>
               <label>
-                Rest Type:
+                Start location time zone (FDP report):
+                <TimeZoneSelector
+                  value={modalStartTZ}
+                  onChange={setModalStartTZ}
+                  placeholder="Defaults to acclimatization TZ"
+                  allowEmpty={true}
+                />
+              </label>
+              <label>
+                End location time zone (FDP release):
+                <TimeZoneSelector
+                  value={modalEndTZ}
+                  onChange={setModalEndTZ}
+                  placeholder="Defaults to acclimatization TZ"
+                  allowEmpty={true}
+                />
+              </label>
+              <p className="form-hint">
+                Home base: {homeBaseTZ.replace(/_/g, ' ')}. Used for CAR 700.42
+                time-zone rest (set in Settings → Home Base).
+              </p>
+              <label>
+                Rest Type (base / CAR 700.40):
                 <select
                   value={restType}
                   onChange={(e) => setRestType(e.target.value as RestType)}
@@ -1108,9 +1255,34 @@ function Calendar() {
         >
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>{selectedRest.title}</h3>
-            <p>Type: {selectedRest.type}</p>
+            {selectedRest.restRule && (
+              <p>
+                <strong>Reference:</strong> {selectedRest.restRule}
+              </p>
+            )}
+            {selectedRest.requiredRestHours != null && (
+              <p>
+                <strong>Minimum clock rest:</strong>{' '}
+                {selectedRest.requiredRestHours} h
+              </p>
+            )}
+            {selectedRest.requiredLocalNights != null &&
+              selectedRest.requiredLocalNights > 0 && (
+                <p>
+                  <strong>Local nights required:</strong>{' '}
+                  {selectedRest.requiredLocalNights}
+                </p>
+              )}
+            {selectedRest.ruleWhy && (
+              <p className="marker-why">{selectedRest.ruleWhy}</p>
+            )}
             <p>Start: {selectedRest.start.toLocaleString()}</p>
             <p>End: {selectedRest.end.toLocaleString()}</p>
+            {selectedRest.violated && (
+              <p className="validation-error">
+                This rest requirement is not currently met.
+              </p>
+            )}
             <div
               style={{
                 display: 'flex',
@@ -1146,6 +1318,40 @@ function Calendar() {
                 OK
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {markerInfo && (
+        <div
+          className="modal-overlay"
+          onClick={() => setMarkerInfo(null)}
+        >
+          <div
+            className="modal marker-info-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-labelledby="marker-info-title"
+          >
+            <h3 id="marker-info-title">
+              {markerInfo.marker}: {markerInfo.label}
+              {markerInfo.violated ? ' (not met)' : ''}
+            </h3>
+            <section className="marker-info-section">
+              <h4>Definition</h4>
+              <p>{markerInfo.definition}</p>
+            </section>
+            <section className="marker-info-section">
+              <h4>Regulatory reference</h4>
+              <p>{markerInfo.reference}</p>
+            </section>
+            <section className="marker-info-section">
+              <h4>Why it applies here</h4>
+              <p className="marker-why">{markerInfo.whyApplies}</p>
+            </section>
+            <button type="button" onClick={() => setMarkerInfo(null)}>
+              Close
+            </button>
           </div>
         </div>
       )}
