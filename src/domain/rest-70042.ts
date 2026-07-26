@@ -152,27 +152,48 @@ export function countFullLocalNightsInGap(
 }
 
 /**
- * Instant when the Nth full local night after `after` ends (09:30 of that night).
- * Used to size the required rest bar for multi-LNR.
+ * Earliest instant at which `n` local night’s rests are completed after `restStart`.
+ *
+ * A local night is ≥9 h of rest inside a 22:30–09:30 acclimatized window.
+ * Completion can be as early as 07:30 (e.g. sleep from 22:30) and is never
+ * forced out to 09:30 when the 9 h block finishes earlier.
+ *
+ * Used to size the required-rest bar so the user sees the earliest next FDP.
+ */
+export function earliestLocalNightsRestEnd(
+  restStart: Date,
+  tz: string,
+  n: number,
+): Date {
+  if (n <= 0) return restStart
+  let found = 0
+  let end = restStart
+  for (let dayOffset = -1; dayOffset <= 40; dayOffset++) {
+    const windowStart = zonedWallTimeOnDay(restStart, tz, 22, 30, dayOffset)
+    const windowEnd = zonedWallTimeOnDay(windowStart, tz, 9, 30, 1)
+    if (windowEnd.getTime() <= restStart.getTime()) continue
+    const sleepStart = Math.max(restStart.getTime(), windowStart.getTime())
+    const completeAt = sleepStart + 9 * 60 * 60 * 1000
+    // Need a full 9 h still inside 22:30–09:30
+    if (completeAt <= windowEnd.getTime() + 500) {
+      found++
+      end = new Date(completeAt)
+      if (found >= n) return end
+    }
+  }
+  return new Date(restStart.getTime() + n * 24 * 60 * 60 * 1000)
+}
+
+/**
+ * @deprecated Prefer earliestLocalNightsRestEnd (ends at earliest legal next FDP).
+ * Kept as alias for call sites / tests that still expect an end-of-window helper name.
  */
 export function endOfNthLocalNightAfter(
   after: Date,
   tz: string,
   n: number,
 ): Date {
-  if (n <= 0) return after
-  let found = 0
-  for (let dayOffset = 0; dayOffset <= 30; dayOffset++) {
-    const windowStart = zonedWallTimeOnDay(after, tz, 22, 30, dayOffset)
-    const windowEnd = zonedWallTimeOnDay(windowStart, tz, 9, 30, 1)
-    const restStart = Math.max(after.getTime(), windowStart.getTime())
-    const hours = (windowEnd.getTime() - restStart) / (1000 * 60 * 60)
-    if (hours >= 9 - 1e-9) {
-      found++
-      if (found >= n) return windowEnd
-    }
-  }
-  return new Date(after.getTime() + n * 24 * 60 * 60 * 1000)
+  return earliestLocalNightsRestEnd(after, tz, n)
 }
 
 /**
@@ -395,6 +416,8 @@ function ordinalSuffix(n: number): string {
 
 /**
  * Planned rest interval after duty for calendar bar + violation checks.
+ * End = later of (clock minimum rest) and (earliest LNR completion), so one
+ * bar shows the longest requirement — never longer than necessary for LNR.
  */
 export function plannedRestInterval(
   dutyEnd: Date,
@@ -402,18 +425,18 @@ export function plannedRestInterval(
   acclTZ: string,
 ): { start: Date; end: Date } {
   const start = dutyEnd
-  let endByHours = new Date(dutyEnd.getTime() + plan.restHours * 60 * 60 * 1000)
+  let end = new Date(dutyEnd.getTime() + plan.restHours * 60 * 60 * 1000)
   if (plan.localNights > 0) {
-    const endByNights = endOfNthLocalNightAfter(
+    const endByNights = earliestLocalNightsRestEnd(
       dutyEnd,
       acclTZ,
       plan.localNights,
     )
-    if (endByNights.getTime() > endByHours.getTime()) {
-      endByHours = endByNights
+    if (endByNights.getTime() > end.getTime()) {
+      end = endByNights
     }
   }
-  return { start, end: endByHours }
+  return { start, end }
 }
 
 /**

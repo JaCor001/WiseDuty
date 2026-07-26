@@ -6,6 +6,9 @@ import type {
 } from './types'
 import {
   computeLocalNightRest,
+  dutyHasEarlyMarker,
+  dutyHasLateMarker,
+  dutyHasNightMarker,
   eventsOverlap,
   formatLnrViolationMessage,
   getMinRestHours,
@@ -15,10 +18,30 @@ import {
 import {
   computeTimeZoneRestPlan,
   dutyAcclTZ,
+  earliestLocalNightsRestEnd,
   plannedRestInterval,
   restPlanSatisfied,
   type TimeZoneRestPlan,
 } from './rest-70042'
+import {
+  buildSingleDaysFree,
+  countSdfsInWindow,
+  detectLocalNightsFromEvents,
+  getWorkHoursInWindow,
+  isSdfAbsolutelyRequired,
+  shouldRequireSdfIn168,
+  workActivitySpanHours,
+} from './rest-70029'
+
+const MS_168H = 168 * 60 * 60 * 1000
+
+const VALID_TYPES = new Set([
+  'duty',
+  'rest',
+  'reserve',
+  'standby',
+  'free',
+])
 
 export function serializeEvents(events: DutyEvent[]): StoredDutyEvent[] {
   return events.map((e) => ({
@@ -37,6 +60,9 @@ export function serializeEvents(events: DutyEvent[]): StoredDutyEvent[] {
     requiredRestHours: e.requiredRestHours,
     requiredLocalNights: e.requiredLocalNights,
     ruleWhy: e.ruleWhy,
+    baseRestType: e.baseRestType,
+    workFactor: e.workFactor,
+    freePurpose: e.freePurpose,
   }))
 }
 
@@ -47,7 +73,7 @@ export function deserializeEvents(stored: StoredDutyEvent[]): DutyEvent[] {
       title: e.title,
       start: new Date(e.start),
       end: new Date(e.end),
-      type: e.type,
+      type: VALID_TYPES.has(e.type) ? e.type : 'duty',
       acclTZ: e.acclTZ,
       startTZ: e.startTZ,
       endTZ: e.endTZ,
@@ -58,6 +84,9 @@ export function deserializeEvents(stored: StoredDutyEvent[]): DutyEvent[] {
       requiredRestHours: e.requiredRestHours,
       requiredLocalNights: e.requiredLocalNights,
       ruleWhy: e.ruleWhy,
+      baseRestType: e.baseRestType,
+      workFactor: e.workFactor,
+      freePurpose: e.freePurpose,
     }))
     .filter((e) => !isNaN(e.start.getTime()) && !isNaN(e.end.getTime()))
 }
@@ -114,6 +143,9 @@ export function removeDutyAndRelated(
 }
 
 function restTitle(plan: TimeZoneRestPlan): string {
+  if (plan.restRule === 'CAR 700.29' && plan.localNights >= 2) {
+    return 'Required Rest — SDF (2× local night, 700.29)'
+  }
   if (plan.localNights >= 3) {
     return `Required Rest — 3× local night (${plan.restRule.replace('CAR ', '')})`
   }
@@ -121,8 +153,7 @@ function restTitle(plan: TimeZoneRestPlan): string {
     return `Required Rest — 2× local night (${plan.restRule.replace('CAR ', '')})`
   }
   if (plan.localNights === 1) {
-    const code =
-      plan.restRule === 'CAR 700.51' ? '700.51' : plan.restRule.replace('CAR ', '')
+    const code = plan.restRule.replace('CAR ', '')
     return `Required Rest — 1× local night (${code})`
   }
   if (plan.restRule === 'CAR 700.42(1)') {
@@ -137,7 +168,206 @@ function restTitle(plan: TimeZoneRestPlan): string {
 }
 
 /**
- * Build required rest after a duty using CAR 700.40 + 700.42.
+ * Phantom (what-if) rest extension for CAR 700.41: after an early duty, shows
+ * how far rest would need to run if the next FDP were late/night; after a
+ * late/night duty, if the next were early. Only when the solid rest bar is
+ * still shorter than one local night’s rest (i.e. disruptive LNR not already
+ * folded into this rest for a real next duty).
+ */
+export interface PhantomDisruptiveRest {
+  end: Date
+  reason: string
+  ifNextLabel: string
+  thisDutyLabel: string
+  solidRestEnd: Date
+}
+
+export function phantomDisruptiveRestExtension(
+  duty: DutyEvent,
+  rest: DutyEvent,
+  regulator: Regulator,
+  globalAcclTZ: string,
+  nextDuty?: DutyEvent | null,
+): PhantomDisruptiveRest | null {
+  if (regulator !== 'TC' || duty.type !== 'duty' || rest.type !== 'rest') {
+    return null
+  }
+
+  const early = dutyHasEarlyMarker(duty, regulator, globalAcclTZ)
+  const late = dutyHasLateMarker(duty, regulator, globalAcclTZ)
+  const night = dutyHasNightMarker(duty, regulator, globalAcclTZ)
+  if (!early && !late && !night) return null
+
+  // Real next already triggers 700.41 → solid bar should include LNR; no phantom
+  if (
+    nextDuty &&
+    isDisruptiveTransition(duty, nextDuty, regulator, globalAcclTZ)
+  ) {
+    return null
+  }
+
+  const accl = dutyAcclTZ(duty, globalAcclTZ)
+  const lnrEnd = earliestLocalNightsRestEnd(duty.end, accl, 1)
+  // Already at least as long as one LNR (e.g. multi-night 700.42/700.29)
+  if (lnrEnd.getTime() <= rest.end.getTime() + 60_000) return null
+
+  // Directional 700.41: E → L/N, or L/N → E (not a vague “either could be a problem”)
+  let thisDutyLabel: string
+  let ifNextLabel: string
+  if (early) {
+    thisDutyLabel = 'early'
+    ifNextLabel = 'night or late'
+  } else if (night && late) {
+    thisDutyLabel = 'night and late'
+    ifNextLabel = 'early'
+  } else if (night) {
+    thisDutyLabel = 'night'
+    ifNextLabel = 'early'
+  } else {
+    thisDutyLabel = 'late'
+    ifNextLabel = 'early'
+  }
+
+  return {
+    end: lnrEnd,
+    ifNextLabel,
+    thisDutyLabel,
+    solidRestEnd: rest.end,
+    reason: `Because this duty is ${thisDutyLabel}, if the next duty is ${ifNextLabel}, CAR 700.41 requires one local night’s rest (LNR: ≥9 h inside 22:30–09:30 acclimatized) before that next FDP — earliest completion ${lnrEnd.toLocaleString()}. The filled bar is only the rest that applies with your current schedule (usually the 700.40 clock minimum). The outline is that what-if LNR: it is not required unless the next duty is actually ${ifNextLabel}.`,
+  }
+}
+
+/**
+ * Fold CAR 700.41 disruptive-schedule LNR into the post-duty rest plan when
+ * the following duty creates a late/night ↔ early transition.
+ */
+export function applyDisruptiveScheduleToPlan(
+  plan: TimeZoneRestPlan,
+  duty: DutyEvent,
+  next: DutyEvent | undefined,
+  regulator: Regulator,
+  globalAcclTZ: string,
+): TimeZoneRestPlan {
+  if (!next || regulator !== 'TC') return plan
+  if (!isDisruptiveTransition(duty, next, regulator, globalAcclTZ)) {
+    return plan
+  }
+  const priorNights = plan.localNights
+  const localNights = Math.max(plan.localNights, 1)
+  const disruptiveWhy =
+    'CAR 700.41 requires one local night’s rest between this duty and the following early/late/night transition (in addition to the 700.40 rest minimum).'
+
+  if (priorNights < 1) {
+    return {
+      ...plan,
+      localNights,
+      restKind: 'lnr_disruptive',
+      restRule: 'CAR 700.41',
+      why: disruptiveWhy,
+    }
+  }
+  return {
+    ...plan,
+    localNights,
+    why: `${plan.why} Additionally: ${disruptiveWhy}`,
+  }
+}
+
+/**
+ * Fold CAR 700.29 single day free from duty into the post-duty rest plan.
+ *
+ * Only when free day is **absolutely required** (cannot legally defer past the
+ * next FDP, or the week is already closed). Do not attach merely because work
+ * is under 60 h but “dense” — another legal FDP may still fit first.
+ *
+ * When attached, rest ends at the **earliest legal free-day completion**.
+ */
+export function applySdfStructureToPlan(
+  plan: TimeZoneRestPlan,
+  duty: DutyEvent,
+  scheduleEvents: DutyEvent[],
+  regulator: Regulator,
+  globalAcclTZ: string,
+  nextDuty?: DutyEvent,
+): TimeZoneRestPlan {
+  if (regulator !== 'TC') return plan
+
+  const windowEnd = duty.end
+  const windowStart = new Date(windowEnd.getTime() - MS_168H)
+  const workH = getWorkHoursInWindow(scheduleEvents, windowStart, windowEnd)
+  const span = workActivitySpanHours(scheduleEvents, windowStart, windowEnd)
+  if (!shouldRequireSdfIn168(workH, span)) return plan
+
+  const lnrs = detectLocalNightsFromEvents(scheduleEvents, globalAcclTZ)
+  const sdfs = buildSingleDaysFree(lnrs, scheduleEvents)
+  if (countSdfsInWindow(sdfs, windowStart, windowEnd) >= 1) return plan
+
+  const accl = dutyAcclTZ(duty, globalAcclTZ)
+  if (
+    !isSdfAbsolutelyRequired({
+      dutyEnd: duty.end,
+      nextDutyStart: nextDuty?.start,
+      nextDutyEnd: nextDuty?.end,
+      scheduleEvents,
+      acclTZ: accl,
+    })
+  ) {
+    return plan
+  }
+
+  const earliestSdfEnd = earliestLocalNightsRestEnd(duty.end, accl, 2)
+  const priorNights = plan.localNights
+  const localNights = Math.max(plan.localNights, 2)
+  const reason = nextDuty
+    ? `the next flight duty period starts at ${nextDuty.start.toLocaleString()}, and free day cannot wait until after it — free day must begin after this release (earliest free-day end ${earliestSdfEnd.toLocaleString()})`
+    : `another flight duty period cannot be added after this release without leaving insufficient room for a single day free from duty in the rolling 168 h window — free day is required now (earliest free-day end ${earliestSdfEnd.toLocaleString()}), same idea as required rest shown before the next duty is scheduled`
+  const sdfWhy = `In the 168 h ending at this release there are ${workH.toFixed(1)} h of work over ${span.toFixed(0)} h of activity and no single day free from duty fully inside the window. CAR 700.29(1)(c): free day is required when further duty would make it impossible to complete. ${reason}.`
+
+  if (priorNights < 2) {
+    if (priorNights < 1) {
+      return {
+        ...plan,
+        localNights,
+        restKind: 'sdf_structure',
+        restRule: 'CAR 700.29',
+        why: sdfWhy,
+      }
+    }
+    return {
+      ...plan,
+      localNights,
+      restKind: 'sdf_structure',
+      restRule: 'CAR 700.29',
+      why: `${plan.why} Additionally: ${sdfWhy}`,
+    }
+  }
+  return {
+    ...plan,
+    localNights,
+    why: `${plan.why} Additionally: ${sdfWhy}`,
+  }
+}
+
+/**
+ * Infer the user's base rest preference from a previously built duty-rest event.
+ */
+export function inferBaseRestType(rest?: DutyEvent): RestType {
+  if (!rest) return '12h'
+  if (rest.baseRestType === '10+travel' || rest.baseRestType === '12h') {
+    return rest.baseRestType
+  }
+  if (rest.title.includes('10+travel')) return '10+travel'
+  if (rest.requiredRestHours === 10 && rest.restKind === 'base') return '10+travel'
+  return '12h'
+}
+
+/**
+ * Build the single required rest after a duty.
+ * Merges 700.40 / 700.42 / 700.51 / 700.41 / 700.29 into one bar: the longest
+ * of clock rest and earliest LNR completion (no separate LNR strip).
+ *
+ * @param scheduleEvents optional full schedule (duty/reserve/standby/free) for
+ *   700.29 hours-of-work and free-day detection; defaults to `allDuties`.
  */
 export function buildRequiredRestForDuty(
   duty: DutyEvent,
@@ -146,15 +376,43 @@ export function buildRequiredRestForDuty(
   homeBaseTZ: string,
   globalAcclTZ: string,
   restType: RestType,
+  scheduleEvents?: DutyEvent[],
 ): DutyEvent {
-  const plan = computeTimeZoneRestPlan(
+  const duties = [...allDuties]
+    .filter((e) => e.type === 'duty')
+    .sort((a, b) => a.start.getTime() - b.start.getTime())
+  if (!duties.some((d) => d.id === duty.id)) {
+    duties.push(duty)
+    duties.sort((a, b) => a.start.getTime() - b.start.getTime())
+  }
+  const idx = duties.findIndex((d) => d.id === duty.id)
+  const next = idx >= 0 ? duties[idx + 1] : undefined
+  const schedule = scheduleEvents ?? duties
+
+  let plan = computeTimeZoneRestPlan(
     duty,
-    allDuties,
+    duties,
     regulator,
     homeBaseTZ,
     globalAcclTZ,
     restType,
   )
+  plan = applyDisruptiveScheduleToPlan(
+    plan,
+    duty,
+    next,
+    regulator,
+    globalAcclTZ,
+  )
+  plan = applySdfStructureToPlan(
+    plan,
+    duty,
+    schedule,
+    regulator,
+    globalAcclTZ,
+    next,
+  )
+
   const accl = dutyAcclTZ(duty, globalAcclTZ)
   const { start, end } = plannedRestInterval(duty.end, plan, accl)
   const isLnr = plan.localNights > 0
@@ -173,6 +431,7 @@ export function buildRequiredRestForDuty(
     isLocalNightRest: isLnr,
     ruleWhy: plan.why,
     violated: false,
+    baseRestType: restType,
   }
 }
 
@@ -209,24 +468,17 @@ export function annotateRestViolations(
     .sort((a, b) => a.start.getTime() - b.start.getTime())
 
   return events.map((e) => {
-    if (e.type !== 'rest' || e.restKind === 'lnr_disruptive') return e
-    // Only duty-linked required rests
-    if (!e.id.endsWith('-rest')) return e
+    // Only duty-linked required rests (one per FDP)
+    if (e.type !== 'rest' || !e.id.endsWith('-rest')) return e
 
-    const dutyId = e.id.replace(/-rest$/, '')
-    const duty = duties.find((d) => d.id === dutyId)
-    const next = duties.find(
-      (d) =>
-        d.id !== dutyId &&
-        d.start.getTime() >= (duty?.end.getTime() ?? e.start.getTime()),
-    )
-    // Prefer chronological next after this rest start
-    const nextAfterRest = duties
-      .filter((d) => d.start.getTime() >= e.start.getTime())
-      .sort((a, b) => a.start.getTime() - b.start.getTime())[0]
+    const dutyId = e.id.slice(0, -'-rest'.length)
+    const dutyIdx = duties.findIndex((d) => d.id === dutyId)
+    const following =
+      dutyIdx >= 0 && dutyIdx < duties.length - 1
+        ? duties[dutyIdx + 1]
+        : undefined
 
-    const following = nextAfterRest ?? next
-    const accl = e.acclTZ || duty?.acclTZ || globalAcclTZ
+    const accl = e.acclTZ || duties[dutyIdx]?.acclTZ || globalAcclTZ
     const plan: TimeZoneRestPlan = {
       restHours: e.requiredRestHours ?? getMinRestHours('TC'),
       localNights: e.requiredLocalNights ?? 0,
@@ -251,7 +503,9 @@ export function annotateRestViolations(
     return {
       ...e,
       violated: !check.ok,
-      ruleWhy: check.ok ? e.ruleWhy : `${e.ruleWhy ?? ''}\n${check.detail}`.trim(),
+      ruleWhy: check.ok
+        ? e.ruleWhy
+        : `${e.ruleWhy ?? ''}\n${check.detail}`.trim(),
       title: check.ok
         ? e.title.replace(/ — not met$/, '')
         : e.title.includes('not met')
@@ -350,55 +604,118 @@ export function summarizeViolatedLnrs(events: DutyEvent[]): string | null {
 }
 
 /**
- * Strip auto-generated 700.41 LNR events (not duty-linked required rests).
+ * Strip legacy separate auto-LNR bars (not the single duty-linked rest).
+ * Duty rests use ids ending in `-rest` and must be preserved.
  */
 export function stripAllLnr(events: DutyEvent[]): DutyEvent[] {
   return events.filter(
     (e) =>
       !(
+        e.type === 'rest' &&
         e.isLocalNightRest &&
-        (e.restKind === 'lnr_disruptive' ||
-          // legacy auto LNRs without restKind / not duty-rest id
-          (!e.restKind && !e.id.endsWith('-rest')))
+        !e.id.endsWith('-rest')
       ),
   )
 }
 
 /**
- * Recompute every 700.41 LNR from adjacent duties after add/edit/delete.
- * Clears disruptive auto LNRs and inserts one per disruptive pair.
- * Also re-annotates required-rest violations against following duties.
+ * Strip legacy separate 700.41 LNR bars (no longer drawn — LNR is folded into
+ * the single duty-linked rest) and re-annotate violation flags.
  */
 export function recomputeLocalNightRests(
   events: DutyEvent[],
-  regulator: Regulator,
+  _regulator: Regulator,
   globalAcclTZ: string,
 ): DutyEvent[] {
   const base = stripAllLnr(events)
-  const duties = base
-    .filter((e) => e.type === 'duty')
-    .sort((a, b) => a.start.getTime() - b.start.getTime())
-
-  const lnrs: DutyEvent[] = []
-  for (let i = 0; i < duties.length - 1; i++) {
-    const prev = duties[i]
-    const next = duties[i + 1]
-    const lnr = maybeBuildLnrBetween(
-      prev,
-      next,
-      regulator,
-      globalAcclTZ,
-      duties,
-    )
-    if (lnr) lnrs.push(lnr)
-  }
-
-  return annotateRestViolations([...base, ...lnrs], globalAcclTZ)
+  return annotateRestViolations(base, globalAcclTZ)
 }
 
 /**
- * Full post-mutation recompute: rebuild one duty's required rest (700.40/42),
- * then 700.41 LNRs + violation flags.
+ * True if this rest is auto-managed (duty-linked required rest or 700.41 LNR).
+ * Manual / unknown rests without these markers are left alone if ever introduced.
+ */
+export function isManagedRestEvent(e: DutyEvent): boolean {
+  if (e.type !== 'rest') return false
+  if (e.id.endsWith('-rest')) return true
+  if (e.restKind === 'lnr_disruptive') return true
+  if (e.isLocalNightRest && e.restRule === 'CAR 700.41') return true
+  // Legacy auto LNRs (no restKind, random id)
+  if (e.isLocalNightRest && !e.id.endsWith('-rest')) return true
+  return false
+}
+
+/** Events that are not duties/rests for calendar bars (reserve, standby, free). */
+export function isAuxiliaryScheduleEvent(e: DutyEvent): boolean {
+  return e.type === 'reserve' || e.type === 'standby' || e.type === 'free'
+}
+
+/**
+ * Rebuild every duty's single required rest
+ * (700.40 / 700.41 / 700.42 / 700.51 / 700.29) from the full chronological
+ * schedule, then annotate violation flags.
+ *
+ * One rest bar per FDP = longest of clock minimum and earliest LNR completion
+ * (including two local nights when a 168 h window requires a single day free).
+ *
+ * @param restTypeForDuty optional map dutyId → base rest preference for duties
+ *   being saved from the form; other duties keep their previous preference.
+ */
+export function recomputeScheduleCompliance(
+  events: DutyEvent[],
+  regulator: Regulator,
+  homeBaseTZ: string,
+  globalAcclTZ: string,
+  restTypeForDuty?: Record<string, RestType>,
+): DutyEvent[] {
+  const duties = events
+    .filter((e) => e.type === 'duty')
+    .sort((a, b) => a.start.getTime() - b.start.getTime())
+
+  const prevRestByDuty = new Map<string, DutyEvent>()
+  for (const e of events) {
+    if (e.type === 'rest' && e.id.endsWith('-rest')) {
+      const dutyId = e.id.slice(0, -'-rest'.length)
+      prevRestByDuty.set(dutyId, e)
+    }
+  }
+
+  // Duties get rebuilt rests; preserve reserve/standby/free and non-managed rests.
+  const preserved = events.filter(
+    (e) =>
+      e.type === 'reserve' ||
+      e.type === 'standby' ||
+      e.type === 'free' ||
+      (e.type === 'rest' && !isManagedRestEvent(e)),
+  )
+
+  // Full schedule without managed rests (for 700.29 work / free-day scan)
+  const scheduleFor70029 = [...duties, ...preserved]
+
+  const rests = duties.map((d) => {
+    const pref =
+      restTypeForDuty?.[d.id] ?? inferBaseRestType(prevRestByDuty.get(d.id))
+    return buildRequiredRestForDuty(
+      d,
+      duties,
+      regulator,
+      homeBaseTZ,
+      globalAcclTZ,
+      pref,
+      scheduleFor70029,
+    )
+  })
+
+  return recomputeLocalNightRests(
+    [...duties, ...rests, ...preserved],
+    regulator,
+    globalAcclTZ,
+  )
+}
+
+/**
+ * Full post-mutation recompute after adding/updating one duty.
+ * Rebuilds required rest for **all** duties (not only the changed one).
  */
 export function recomputeAfterDutyChange(
   events: DutyEvent[],
@@ -413,17 +730,28 @@ export function recomputeAfterDutyChange(
     ? withoutOldRest.map((e) => (e.id === duty.id ? duty : e))
     : [...withoutOldRest, duty]
 
-  const rest = buildRequiredRestForDuty(
-    duty,
+  return recomputeScheduleCompliance(
     withDuty,
     regulator,
     homeBaseTZ,
     globalAcclTZ,
-    restType,
+    { [duty.id]: restType },
   )
-  return recomputeLocalNightRests(
-    [...withDuty.filter((e) => e.id !== rest.id), rest],
+}
+
+/**
+ * After deleting a duty (and its linked rest), rebuild compliance for survivors.
+ */
+export function recomputeAfterDutyDelete(
+  events: DutyEvent[],
+  regulator: Regulator,
+  homeBaseTZ: string,
+  globalAcclTZ: string,
+): DutyEvent[] {
+  return recomputeScheduleCompliance(
+    events,
     regulator,
+    homeBaseTZ,
     globalAcclTZ,
   )
 }

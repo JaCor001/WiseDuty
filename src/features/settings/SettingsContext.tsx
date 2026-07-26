@@ -7,7 +7,12 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import type { AvgSectorTime, Regulator, TimeFormat } from '../../domain/types'
+import type {
+  AvgSectorTime,
+  Regulator,
+  TimeFormat,
+  TimeFreeOption,
+} from '../../domain/types'
 import { STORAGE_KEYS } from '../../domain/types'
 import { readString, writeString } from '../../shared/storage'
 
@@ -27,6 +32,8 @@ interface SettingsContextValue {
   setSectors: (value: number) => void
   avgSectorTime: AvgSectorTime
   setAvgSectorTime: (value: AvgSectorTime) => void
+  timeFreeOption: TimeFreeOption
+  setTimeFreeOption: (value: TimeFreeOption) => void
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null)
@@ -64,6 +71,12 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     () =>
       (readString(STORAGE_KEYS.lastAvgSectorTime, '<30') as AvgSectorTime) ||
       '<30',
+  )
+  const [timeFreeOption, setTimeFreeOptionState] = useState<TimeFreeOption>(
+    () => {
+      const v = readString(STORAGE_KEYS.timeFreeOption, 'auto') as TimeFreeOption
+      return v === 'C' || v === 'D' || v === 'auto' ? v : 'auto'
+    },
   )
 
   useEffect(() => {
@@ -113,6 +126,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     writeString(STORAGE_KEYS.lastAvgSectorTime, value)
   }, [])
 
+  const setTimeFreeOption = useCallback((value: TimeFreeOption) => {
+    setTimeFreeOptionState(value)
+    writeString(STORAGE_KEYS.timeFreeOption, value)
+  }, [])
+
   const value = useMemo(
     () => ({
       darkMode,
@@ -130,6 +148,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setSectors,
       avgSectorTime,
       setAvgSectorTime,
+      timeFreeOption,
+      setTimeFreeOption,
     }),
     [
       darkMode,
@@ -147,6 +167,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setSectors,
       avgSectorTime,
       setAvgSectorTime,
+      timeFreeOption,
+      setTimeFreeOption,
     ],
   )
 

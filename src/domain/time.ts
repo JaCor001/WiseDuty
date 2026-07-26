@@ -201,6 +201,31 @@ export function addDaysToDateInputValue(dateYmd: string, days: number): string {
 }
 
 /**
+ * Whole civil days from `fromYmd` to `toYmd` (positive if `to` is later).
+ * Uses UTC noon-style date-only math to avoid DST edge cases.
+ */
+export function daysBetweenDateInputValues(
+  fromYmd: string,
+  toYmd: string,
+): number {
+  if (!fromYmd || !toYmd) return 0
+  const [y1, m1, d1] = fromYmd.split('-').map(Number)
+  const [y2, m2, d2] = toYmd.split('-').map(Number)
+  if (![y1, m1, d1, y2, m2, d2].every(Number.isFinite)) return 0
+  const a = Date.UTC(y1, (m1 || 1) - 1, d1 || 1)
+  const b = Date.UTC(y2, (m2 || 1) - 1, d2 || 1)
+  return Math.round((b - a) / (24 * 60 * 60 * 1000))
+}
+
+/** Parse YYYY-MM-DD into a local Date at local midnight. */
+export function parseDateInputValue(dateYmd: string): Date | null {
+  if (!dateYmd || !/^\d{4}-\d{2}-\d{2}$/.test(dateYmd)) return null
+  const [y, mo, d] = dateYmd.split('-').map(Number)
+  const dt = new Date(y, (mo || 1) - 1, d || 1)
+  return isNaN(dt.getTime()) ? null : dt
+}
+
+/**
  * True when the end civil day is after the start civil day, or when the end
  * clock is before the start clock (overnight crossing midnight).
  */

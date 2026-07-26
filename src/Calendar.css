@@ -343,6 +343,91 @@
 .event-bar.rest {
   background: var(--day-rest-color, #7e22ce);
   cursor: pointer;
+  /* Above phantom join tuck so solid click opens solid rest sheet */
+  z-index: 2;
+}
+
+/*
+ * What-if 700.41 LNR contour: continuous solid outline extension of rest bar.
+ * Same height as solid rest; open on the left at the join (no start edge).
+ */
+.event-bar.rest-phantom {
+  --phantom-stroke: color-mix(
+    in srgb,
+    var(--day-rest-color, #7e22ce) 80%,
+    transparent
+  );
+  /* Match .event-bar solid rest height */
+  height: clamp(6px, 1.1vh, 10px);
+  margin-top: 0;
+  background: transparent;
+  border: none;
+  border-top: 1.5px solid var(--phantom-stroke);
+  border-bottom: 1.5px solid var(--phantom-stroke);
+  border-radius: 0;
+  box-shadow: none;
+  opacity: 0.9;
+  cursor: help;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+/* Join at solid rest end: no left vertical — reads as extension, not a new bar */
+.event-bar.rest-phantom--from-solid {
+  border-left: none;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* Full-day middle of multi-day phantom: rails only */
+.event-bar.rest-phantom--continue {
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
+}
+
+/* Soft terminal at earliest LNR end */
+.event-bar.rest-phantom--to-end {
+  border-right: 1.5px solid var(--phantom-stroke);
+  border-top-right-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+
+/* Same-day stub: open left + closed right */
+.event-bar.rest-phantom--from-solid.rest-phantom--to-end {
+  border-left: none;
+  border-right: 1.5px solid var(--phantom-stroke);
+  border-radius: 0 3px 3px 0;
+}
+
+.event-bar.rest-phantom:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--day-rest-color, #7e22ce) 10%, transparent);
+}
+
+body.dark .event-bar.rest-phantom {
+  --phantom-stroke: color-mix(
+    in srgb,
+    var(--day-rest-color, #c084fc) 75%,
+    transparent
+  );
+}
+
+.event-bar.reserve {
+  background: color-mix(in srgb, #0d9488 75%, var(--card-bg));
+  cursor: pointer;
+  border: 1px dashed color-mix(in srgb, #0f766e 50%, transparent);
+}
+
+.event-bar.standby {
+  background: color-mix(in srgb, #64748b 80%, var(--card-bg));
+  cursor: pointer;
+}
+
+.event-bar.free {
+  background: color-mix(in srgb, #34d399 45%, var(--card-bg));
+  cursor: pointer;
+  opacity: 0.9;
 }
 
 .mr-label {
@@ -423,6 +508,31 @@
   border-color: color-mix(in srgb, #0f766e 35%, var(--border-color));
 }
 
+.marker.SDF {
+  color: color-mix(in srgb, #047857 88%, var(--text-color));
+  border-color: color-mix(in srgb, #047857 35%, var(--border-color));
+  background: color-mix(in srgb, #d1fae5 55%, var(--card-bg));
+  font-size: 0.58rem;
+}
+
+/* Planned free day after a work block — not yet taken */
+.marker.SDF.SDF-prospective {
+  color: color-mix(in srgb, #b45309 90%, var(--text-color));
+  border-color: color-mix(in srgb, #d97706 45%, var(--border-color));
+  border-style: dashed;
+  background: color-mix(in srgb, #fef3c7 60%, var(--card-bg));
+}
+
+body.dark .marker.SDF {
+  background: color-mix(in srgb, #064e3b 40%, var(--card-bg));
+}
+
+body.dark .marker.SDF.SDF-prospective {
+  color: color-mix(in srgb, #fbbf24 85%, var(--text-color));
+  border-color: color-mix(in srgb, #d97706 50%, var(--border-color));
+  background: color-mix(in srgb, #78350f 35%, var(--card-bg));
+}
+
 /* Rest requirement not met */
 .marker.LNR.LNR-violated,
 .marker.LNR2.LNR-violated,
@@ -458,28 +568,357 @@ button.marker.marker-button:focus-visible {
   box-shadow: 0 0 0 1px color-mix(in srgb, #b91c1c 55%, transparent);
 }
 
-.marker-info-modal {
-  max-width: 28rem;
+/* —— Info sheet (marker / event explanation) —— */
+.info-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(1rem, env(safe-area-inset-top)) 1rem
+    max(1rem, env(safe-area-inset-bottom));
+  background: color-mix(in srgb, #0f172a 48%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: info-sheet-fade-in 0.18s ease-out;
+}
+
+@keyframes info-sheet-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.info-sheet {
+  width: min(100%, 26.5rem);
+  max-height: min(88dvh, 40rem);
+  display: flex;
+  flex-direction: column;
+  background: var(--card-bg, #fff);
+  color: var(--text-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
+  border-radius: 18px;
+  box-shadow:
+    0 24px 48px color-mix(in srgb, #0f172a 22%, transparent),
+    0 0 0 1px color-mix(in srgb, #fff 6%, transparent);
+  overflow: hidden;
+  animation: info-sheet-rise 0.22s cubic-bezier(0.22, 1, 0.36, 1);
   text-align: left;
 }
 
-.marker-info-section {
-  margin: 0.75rem 0;
+@keyframes info-sheet-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
-.marker-info-section h4 {
-  margin: 0 0 0.25rem;
-  font-size: 0.85rem;
-  color: var(--text-secondary, #64748b);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.info-sheet--alert {
+  border-color: color-mix(in srgb, #b91c1c 35%, var(--border-color));
 }
 
-.marker-info-section p,
-.marker-why {
+.info-sheet-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1.15rem 1.15rem 0.85rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--primary-color, #2563eb) 6%, var(--card-bg)) 0%,
+    var(--card-bg) 100%
+  );
+}
+
+.info-sheet--alert .info-sheet-header {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, #b91c1c 8%, var(--card-bg)) 0%,
+    var(--card-bg) 100%
+  );
+}
+
+.info-sheet-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  min-width: 0;
+}
+
+.info-sheet-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.35rem;
+  height: 2.35rem;
+  padding: 0 0.45rem;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  color: color-mix(in srgb, var(--primary-color, #2563eb) 90%, var(--text-color));
+  background: color-mix(in srgb, var(--primary-color, #2563eb) 12%, var(--card-bg));
+  border: 1px solid
+    color-mix(in srgb, var(--primary-color, #2563eb) 22%, var(--border-color));
+}
+
+.info-sheet--alert .info-sheet-badge {
+  color: #b91c1c;
+  background: color-mix(in srgb, #fecaca 40%, var(--card-bg));
+  border-color: color-mix(in srgb, #b91c1c 28%, var(--border-color));
+}
+
+.info-sheet-title-block {
+  min-width: 0;
+  padding-top: 0.15rem;
+}
+
+.info-sheet-title {
   margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.info-sheet-status {
+  display: inline-block;
+  margin-top: 0.3rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #b91c1c;
+  background: color-mix(in srgb, #fecaca 45%, var(--card-bg));
+  border: 1px solid color-mix(in srgb, #b91c1c 25%, transparent);
+}
+
+.info-sheet-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.15rem;
+  height: 2.15rem;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card-bg) 90%, var(--text-color));
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.info-sheet-close:hover {
+  color: var(--text-color);
+  border-color: color-mix(in srgb, var(--text-color) 22%, var(--border-color));
+  background: color-mix(in srgb, var(--text-color) 6%, var(--card-bg));
+}
+
+.info-sheet-meta {
+  list-style: none;
+  margin: 0;
+  padding: 0.7rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 65%, transparent);
+  background: color-mix(in srgb, var(--text-color) 2.5%, var(--card-bg));
+}
+
+.info-sheet-meta li {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--text-secondary, #64748b);
+}
+
+.info-sheet-body {
+  padding: 0.85rem 1.15rem 0.35rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.info-sheet-section {
+  margin: 0;
+  padding: 0.85rem 0.9rem;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--text-color) 2.8%, var(--card-bg));
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+}
+
+.info-sheet-section-label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary, #64748b);
+}
+
+.info-sheet-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 800;
+  color: color-mix(in srgb, var(--primary-color, #2563eb) 95%, #fff);
+  background: color-mix(in srgb, var(--primary-color, #2563eb) 16%, var(--card-bg));
+  border: 1px solid
+    color-mix(in srgb, var(--primary-color, #2563eb) 28%, var(--border-color));
+}
+
+.info-sheet-section-text {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text-color);
+}
+
+.info-sheet-reference {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8rem;
   line-height: 1.45;
-  font-size: 0.95rem;
+  color: color-mix(in srgb, var(--primary-color, #2563eb) 55%, var(--text-color));
+}
+
+.info-sheet-section-debug {
+  background: color-mix(in srgb, #0f172a 4%, var(--card-bg));
+}
+
+.info-sheet-section-label .info-sheet-copy-btn {
+  margin-left: auto;
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
+  border-radius: 8px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  color: var(--text-color);
+  background: color-mix(in srgb, var(--text-color) 4%, var(--card-bg));
+}
+
+.info-sheet-section-label .info-sheet-copy-btn:hover {
+  border-color: color-mix(in srgb, var(--primary-color, #2563eb) 40%, var(--border-color));
+}
+
+.info-sheet-section-hint {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--text-secondary, #64748b);
+}
+
+.info-sheet-debug {
+  margin: 0;
+  max-height: min(42vh, 320px);
+  overflow: auto;
+  padding: 0.65rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 75%, transparent);
+  background: color-mix(in srgb, #0f172a 6%, var(--card-bg));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: color-mix(in srgb, var(--text-color) 92%, #64748b);
+  user-select: text;
+}
+
+body.dark .info-sheet-debug {
+  background: color-mix(in srgb, #000 35%, var(--card-bg));
+}
+
+.info-sheet-btn-secondary {
+  color: var(--text-color);
+  background: color-mix(in srgb, var(--text-color) 5%, var(--card-bg));
+  border-color: color-mix(in srgb, var(--border-color) 85%, transparent);
+}
+
+.info-sheet-btn-secondary:hover {
+  border-color: color-mix(in srgb, var(--primary-color, #2563eb) 35%, var(--border-color));
+}
+
+.info-sheet-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.85rem 1.15rem 1.1rem;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  background: color-mix(in srgb, var(--text-color) 1.5%, var(--card-bg));
+}
+
+.info-sheet-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 0.5rem 0.95rem;
+  font-size: 0.88rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.info-sheet-btn-primary {
+  color: #fff;
+  background: var(--primary-color, #2563eb);
+  border-color: color-mix(in srgb, var(--primary-color, #2563eb) 80%, #000);
+}
+
+.info-sheet-btn-primary:hover {
+  filter: brightness(1.06);
+}
+
+.info-sheet-btn-danger {
+  margin-right: auto;
+  color: #b91c1c;
+  background: color-mix(in srgb, #fecaca 35%, var(--card-bg));
+  border-color: color-mix(in srgb, #b91c1c 28%, var(--border-color));
+}
+
+.info-sheet-btn-danger:hover {
+  background: color-mix(in srgb, #fecaca 55%, var(--card-bg));
+}
+
+body.dark .info-sheet-overlay {
+  background: color-mix(in srgb, #000 62%, transparent);
+}
+
+body.dark .info-sheet-reference {
+  color: color-mix(in srgb, #93c5fd 70%, var(--text-color));
 }
 
 .form-hint {

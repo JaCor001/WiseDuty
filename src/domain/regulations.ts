@@ -1,5 +1,9 @@
 import type { AvgSectorTime, DutyEvent, Regulator } from './types'
-import { MAX_WEEKLY_DUTY_HOURS } from './types'
+import {
+  defaultWorkFactor,
+  isWorkEvent,
+  MAX_WEEKLY_DUTY_HOURS,
+} from './types'
 import {
   getHourInTZ,
   getMinutesInTZ,
@@ -233,13 +237,19 @@ export function getWeeklyDutyHours(
   excludeEventId?: string,
 ): number {
   const windowStart = new Date(windowEnd.getTime() - 7 * 24 * 60 * 60 * 1000)
+  // Weighted hours of work (duty/standby 100%, reserve 33%) — CAR 700.29(3)
   return events
-    .filter((e) => e.type === 'duty' && e.id !== excludeEventId)
+    .filter((e) => isWorkEvent(e) && e.id !== excludeEventId)
     .reduce((total, e) => {
+      const factor = e.workFactor ?? defaultWorkFactor(e.type)
+      if (factor <= 0) return total
       const overlapStart = Math.max(e.start.getTime(), windowStart.getTime())
       const overlapEnd = Math.min(e.end.getTime(), windowEnd.getTime())
       if (overlapEnd <= overlapStart) return total
-      return total + (overlapEnd - overlapStart) / (1000 * 60 * 60)
+      return (
+        total +
+        ((overlapEnd - overlapStart) / (1000 * 60 * 60)) * factor
+      )
     }, 0)
 }
 
@@ -280,7 +290,15 @@ export function getNightWindow(regulator: Regulator): {
 }
 
 /** Calendar chips: duty classification + rest requirement markers. */
-export type DutyMarker = 'E' | 'L' | 'N' | 'LNR' | 'LNR2' | 'LNR3' | 'RR'
+export type DutyMarker =
+  | 'E'
+  | 'L'
+  | 'N'
+  | 'LNR'
+  | 'LNR2'
+  | 'LNR3'
+  | 'RR'
+  | 'SDF'
 
 function acclTZFor(event: DutyEvent, globalAcclTZ: string): string {
   return event.acclTZ || globalAcclTZ
@@ -466,6 +484,8 @@ export function getDutyMarkers(
 ): DutyMarker[] {
   if (event.type === 'rest') {
     const nights = event.requiredLocalNights ?? 0
+    // Free-day rest (700.29) — show as SDF, not generic 2×LNR
+    if (event.restRule === 'CAR 700.29' && nights >= 2) return ['SDF']
     if (nights >= 3) return ['LNR3']
     if (nights === 2) return ['LNR2']
     if (event.isLocalNightRest || nights === 1) return ['LNR']
@@ -506,7 +526,7 @@ export type MarkerBarAnchor = 'start' | 'end' | 'center'
 export function markerBarAnchor(type: DutyMarker): MarkerBarAnchor {
   if (type === 'E') return 'start'
   if (type === 'L' || type === 'N') return 'end'
-  return 'center' // LNR / LNR2 / LNR3 / RR
+  return 'center' // LNR / LNR2 / LNR3 / RR / SDF
 }
 
 /** Short chip label for calendar. */
@@ -515,6 +535,7 @@ export function markerChipLabel(type: DutyMarker, violated?: boolean): string {
   if (type === 'LNR2') return violated ? '2×LNR!' : '2×LNR'
   if (type === 'LNR3') return violated ? '3×LNR!' : '3×LNR'
   if (type === 'RR') return violated ? 'RR!' : 'RR'
+  if (type === 'SDF') return violated ? 'SDF!' : 'SDF'
   return type
 }
 

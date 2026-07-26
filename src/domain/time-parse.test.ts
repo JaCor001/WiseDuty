@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   addDaysToDateInputValue,
+  daysBetweenDateInputValues,
   formatTimeDisplay,
   isOvernightDutyPeriod,
   overnightAutoEndDate,
@@ -51,6 +52,13 @@ describe('overnight duty helpers', () => {
   it('adds days to date input values', () => {
     expect(addDaysToDateInputValue('2024-06-10', 1)).toBe('2024-06-11')
     expect(addDaysToDateInputValue('2024-06-30', 1)).toBe('2024-07-01')
+    expect(addDaysToDateInputValue('2024-06-11', -1)).toBe('2024-06-10')
+  })
+
+  it('computes whole days between date inputs', () => {
+    expect(daysBetweenDateInputValues('2024-06-10', '2024-06-12')).toBe(2)
+    expect(daysBetweenDateInputValues('2024-06-12', '2024-06-10')).toBe(-2)
+    expect(daysBetweenDateInputValues('2024-06-10', '2024-06-10')).toBe(0)
   })
 
   it('auto end date only when end clock is before start and end still same day', () => {

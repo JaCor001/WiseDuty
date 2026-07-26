@@ -4,6 +4,7 @@ import {
   computeTimeZoneRestPlan,
   countFullLocalNightsInGap,
   countTrailingWoclDuties,
+  earliestLocalNightsRestEnd,
   endOfNthLocalNightAfter,
   fdpTouchesWocl,
   plannedRestInterval,
@@ -219,10 +220,22 @@ describe('multi-LNR helpers', () => {
     expect(n).toBeGreaterThanOrEqual(2)
   })
 
-  it('endOfNthLocalNightAfter is after release', () => {
+  it('earliest LNR ends at 07:30 when rest covers from 22:30 (not forced to 09:30)', () => {
+    // Release at 22:00 → sleep can start 22:30 → 9 h later = 07:30
+    const release = zonedWallTime(HOME, 2024, 6, 10, 22, 0)
+    const e1 = earliestLocalNightsRestEnd(release, HOME, 1)
+    const expected = zonedWallTime(HOME, 2024, 6, 11, 7, 30)
+    expect(e1.getTime()).toBe(expected.getTime())
+    // Alias still works
+    expect(endOfNthLocalNightAfter(release, HOME, 1).getTime()).toBe(
+      expected.getTime(),
+    )
+  })
+
+  it('earliest multi-LNR is after the Nth completed 9 h night block', () => {
     const release = zonedWallTime(HOME, 2024, 6, 10, 18, 0)
-    const e1 = endOfNthLocalNightAfter(release, HOME, 1)
-    const e2 = endOfNthLocalNightAfter(release, HOME, 2)
+    const e1 = earliestLocalNightsRestEnd(release, HOME, 1)
+    const e2 = earliestLocalNightsRestEnd(release, HOME, 2)
     expect(e1.getTime()).toBeGreaterThan(release.getTime())
     expect(e2.getTime()).toBeGreaterThan(e1.getTime())
   })

@@ -45,6 +45,24 @@ describe('dayBarPosition / formatHHmm', () => {
     expect(pos.left).toBeCloseTo((6 / 24) * 100, 5)
     expect(pos.width).toBeCloseTo((6 / 24) * 100, 5)
   })
+
+  it('clips multi-day phantom spans across midnight (rest end → next-day LNR end)', () => {
+    // Solid rest ends 16:00 day 10; phantom LNR ends 07:30 day 11
+    const phantomStart = new Date(2024, 0, 10, 16, 0)
+    const phantomEnd = new Date(2024, 0, 11, 7, 30)
+
+    const day10Start = new Date(2024, 0, 10)
+    const day10End = new Date(2024, 0, 11)
+    const on10 = dayBarPosition(phantomStart, phantomEnd, day10Start, day10End)
+    expect(on10.left).toBeCloseTo((16 / 24) * 100, 5)
+    expect(on10.width).toBeCloseTo(((24 - 16) / 24) * 100, 5)
+
+    const day11Start = new Date(2024, 0, 11)
+    const day11End = new Date(2024, 0, 12)
+    const on11 = dayBarPosition(phantomStart, phantomEnd, day11Start, day11End)
+    expect(on11.left).toBeCloseTo(0, 5)
+    expect(on11.width).toBeCloseTo((7.5 / 24) * 100, 5)
+  })
 })
 
 describe('getHourInTZ', () => {

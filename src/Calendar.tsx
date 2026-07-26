@@ -10,19 +10,37 @@ import { Link } from 'react-router-dom'
 import './Calendar.css'
 import './App.css'
 import type { AvgSectorTime, DutyEvent, RestType } from './domain/types'
-import { MAX_WEEKLY_DUTY_HOURS } from './domain/types'
+import { defaultWorkFactor, MAX_WEEKLY_DUTY_HOURS } from './domain/types'
 import {
   createId,
   eventsOnLocalDay,
   findDutyOnDate,
   findDutiesOnDate,
+  phantomDisruptiveRestExtension,
   recomputeAfterDutyChange,
-  recomputeLocalNightRests,
+  recomputeAfterDutyDelete,
   removeDutyAndRelated,
   restIdForDuty,
   summarizeViolatedLnrs,
 } from './domain/events'
-import { explainMarker, type MarkerExplanation } from './domain/markers'
+import {
+  freeEventFromProposal,
+  proposeFreeBlocks,
+  type FreeBlockProposal,
+} from './domain/free-time-planner'
+import {
+  explainEvent,
+  explainMarker,
+  infoSheetFrom70029Violation,
+  infoSheetFromMarker,
+  infoSheetFromPhantomDisruptiveRest,
+  infoSheetFromSdf,
+  type InfoSheetContent,
+} from './domain/markers'
+import {
+  withDebugContext,
+  type DebugFocus,
+} from './domain/info-sheet-debug'
 import {
   eventsOverlap,
   getAbsoluteMaxFdpHours,
@@ -34,14 +52,22 @@ import {
   type DutyMarker,
 } from './domain/regulations'
 import {
+  evaluate70029,
+  hasHard70029HourViolation,
+  hasSoft70029SdfWarning,
+} from './domain/rest-70029'
+import {
+  addDaysToDateInputValue,
   combineLocalDateAndTime,
   dayBarPosition,
+  daysBetweenDateInputValues,
   formatHHmm,
   formatTimeDisplay,
   getHourInTZ,
   getZuluTimeDisplay,
   isOvernightDutyPeriod,
   overnightAutoEndDate,
+  parseDateInputValue,
   parseLocalDateTime,
   startOfLocalDay,
   toLocalDateInputValue,
@@ -75,6 +101,7 @@ function Calendar() {
     setSectors,
     avgSectorTime,
     setAvgSectorTime,
+    timeFreeOption,
   } = useSettings()
 
   const homeBaseTZ = referenceTZ || acclTZ
@@ -82,6 +109,51 @@ function Calendar() {
   const [currentDate, setCurrentDate] = useState(() => new Date())
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [events, setEvents] = useState<DutyEvent[]>(() => loadEvents())
+  const [freeProposals, setFreeProposals] = useState<FreeBlockProposal[]>([])
+  const [showFreeProposals, setShowFreeProposals] = useState(false)
+
+  const report70029 = useMemo(
+    () => evaluate70029(events, acclTZ, regulator, timeFreeOption),
+    [events, acclTZ, regulator, timeFreeOption],
+  )
+
+  /** Open marker/event info sheet with section-4 AI debug dump attached. */
+  const openInfoSheet = (sheet: InfoSheetContent, focus: DebugFocus) => {
+    setInfoSheet(
+      withDebugContext(sheet, {
+        focus,
+        events,
+        regulator,
+        acclTZ,
+        homeBaseTZ,
+        timeFreeOption,
+        report70029,
+      }),
+    )
+  }
+
+  const [debugCopied, setDebugCopied] = useState(false)
+  const copyDebugContext = async () => {
+    const text = infoSheet?.debugContext
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setDebugCopied(true)
+      window.setTimeout(() => setDebugCopied(false), 2000)
+    } catch {
+      // Fallback for restricted clipboard
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+      setDebugCopied(true)
+      window.setTimeout(() => setDebugCopied(false), 2000)
+    }
+  }
   const [deletedEventCount, setDeletedEventCount] = useState(
     () => loadDeletedEvents().length,
   )
@@ -101,9 +173,7 @@ function Calendar() {
   const [isEdit, setIsEdit] = useState(false)
   const [editEvent, setEditEvent] = useState<DutyEvent | null>(null)
   const [animating, setAnimating] = useState(false)
-  const [showRestDetails, setShowRestDetails] = useState(false)
-  const [selectedRest, setSelectedRest] = useState<DutyEvent | null>(null)
-  const [markerInfo, setMarkerInfo] = useState<MarkerExplanation | null>(null)
+  const [infoSheet, setInfoSheet] = useState<InfoSheetContent | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [maxDutyResult, setMaxDutyResult] = useState('')
   const [validationMessage, setValidationMessage] = useState('')
@@ -207,9 +277,33 @@ function Calendar() {
   const getDayStatus = (date: Date) => {
     const dayEvents = eventsOnLocalDay(events, date)
     if (dayEvents.some((e) => e.violated)) return 'red'
+    const dayStart = startOfLocalDay(date)
+    const dayEnd = new Date(dayStart)
+    dayEnd.setDate(dayEnd.getDate() + 1)
+    const has70029 = report70029.violations.some(
+      (v) => v.windowEnd >= dayStart && v.windowEnd < dayEnd,
+    )
+    if (has70029) return 'red'
     if (dayEvents.some((e) => e.type === 'duty')) return 'blue'
-    if (dayEvents.some((e) => e.type === 'rest')) return 'amber'
+    if (
+      dayEvents.some((e) => e.type === 'rest') ||
+      report70029.displaySdfs.some(
+        (d) => d.sdf.start < dayEnd && d.sdf.end > dayStart,
+      )
+    ) {
+      return 'amber'
+    }
     return 'white'
+  }
+
+  /** Display SDFs (load-bearing / required before next) that overlap a local day. */
+  const sdfsOnDay = (date: Date) => {
+    const dayStart = startOfLocalDay(date)
+    const dayEnd = new Date(dayStart)
+    dayEnd.setDate(dayEnd.getDate() + 1)
+    return report70029.displaySdfs.filter(
+      (d) => d.sdf.start < dayEnd && d.sdf.end > dayStart,
+    )
   }
 
   const renderEventBars = (date: Date) => {
@@ -275,26 +369,194 @@ function Calendar() {
       )
 
       // Key includes day so multi-day events don't collide across cells
+      const barClass =
+        event.type === 'reserve'
+          ? 'reserve'
+          : event.type === 'standby'
+            ? 'standby'
+            : event.type === 'free'
+              ? 'free'
+              : event.type
+
       allBars.push(
         <div
           key={`${event.id}-${dayStart.toISOString()}`}
-          className={`event-bar ${event.type}${event.violated ? ' violated' : ''}`}
+          className={`event-bar ${barClass}${event.violated ? ' violated' : ''}`}
           style={{ left: `${left}%`, width: `${width}%`, top: barTop }}
           title={event.title}
           onClick={(e) => {
             e.stopPropagation()
-            if (event.type === 'duty') {
-              alert(
-                `${event.title}\nType: ${event.type}\nStart: ${event.start.toLocaleString()}\nEnd: ${event.end.toLocaleString()}`,
+            if (event.type === 'free') {
+              openInfoSheet(
+                {
+                  badge: 'Free',
+                  title: event.title || 'Time free from duty',
+                  rule: 'Time free from duty: the member is not required to perform work for the operator, and the operator must not assign duty during this period. Free time is used to form local nights’ rests and single days free from duty under CAR 700.29.',
+                  reference: 'CAR 700.29; AC 700-047 §§4.31–4.32',
+                  whyApplies:
+                    event.ruleWhy ||
+                    `Scheduled free time from ${event.start.toLocaleString()} to ${event.end.toLocaleString()}.`,
+                  meta: [
+                    `Start · ${event.start.toLocaleString()}`,
+                    `End · ${event.end.toLocaleString()}`,
+                    event.freePurpose
+                      ? `Purpose · ${event.freePurpose}`
+                      : 'Purpose · manual',
+                  ],
+                  canDelete: true,
+                  eventId: event.id,
+                },
+                { kind: 'event', event },
+              )
+            } else if (
+              event.type === 'reserve' ||
+              event.type === 'standby'
+            ) {
+              const factor = event.workFactor ?? defaultWorkFactor(event.type)
+              openInfoSheet(
+                {
+                  badge: event.type === 'reserve' ? 'RSV' : 'SBY',
+                  title:
+                    event.type === 'reserve'
+                      ? 'Reserve availability'
+                      : 'Standby',
+                  rule:
+                    event.type === 'reserve'
+                      ? 'Time as a flight crew member on reserve (availability with notice of more than one hour) counts at 33% toward the maximum number of hours of work.'
+                      : 'Time as a flight crew member on standby (at a designated location, notice of one hour or less) counts at 100% toward hours of work.',
+                  reference: 'CAR 700.29(3); AC 700-047 §4.34',
+                  whyApplies: `${event.type === 'reserve' ? 'Reserve' : 'Standby'} from ${event.start.toLocaleString()} to ${event.end.toLocaleString()}. Work credit factor ${factor} (CAR 700.29(3)).`,
+                  meta: [
+                    `Start · ${event.start.toLocaleString()}`,
+                    `End · ${event.end.toLocaleString()}`,
+                    `Work factor · ${factor}`,
+                  ],
+                  canDelete: true,
+                  eventId: event.id,
+                },
+                { kind: 'event', event },
               )
             } else {
-              setSelectedRest(event)
-              setShowRestDetails(true)
+              openInfoSheet(
+                explainEvent(event, regulator, acclTZ, homeBaseTZ),
+                { kind: 'event', event },
+              )
             }
           }}
         />,
       )
+
     })
+
+    // Phantom 700.41 contours: may extend past the solid rest into later day
+    // cells (e.g. rest ends 16:00, LNR ends 07:30 next day). Draw on every day
+    // the phantom interval overlaps — not only days that host the solid rest.
+    {
+      const dutiesSorted = events
+        .filter((e) => e.type === 'duty')
+        .sort((a, b) => a.start.getTime() - b.start.getTime())
+      const rests = events.filter(
+        (e) => e.type === 'rest' && e.id.endsWith('-rest'),
+      )
+      for (const rest of rests) {
+        const dutyId = rest.id.slice(0, -'-rest'.length)
+        const dutyIdx = dutiesSorted.findIndex((d) => d.id === dutyId)
+        if (dutyIdx < 0) continue
+        const parentDuty = dutiesSorted[dutyIdx]
+        const nextDuty = dutiesSorted[dutyIdx + 1]
+        const phantom = phantomDisruptiveRestExtension(
+          parentDuty,
+          rest,
+          regulator,
+          acclTZ,
+          nextDuty,
+        )
+        if (!phantom || phantom.end.getTime() <= rest.end.getTime()) continue
+
+        const phantomStart = rest.end
+        const phantomEnd = phantom.end
+        // Skip days that do not intersect [phantomStart, phantomEnd)
+        if (
+          phantomEnd.getTime() <= dayStart.getTime() ||
+          phantomStart.getTime() >= dayEnd.getTime()
+        ) {
+          continue
+        }
+
+        const { left: pLeft, width: pWidth } = dayBarPosition(
+          phantomStart,
+          phantomEnd,
+          dayStart,
+          dayEnd,
+        )
+        if (pWidth <= 0.15) continue
+
+        // Segment roles: open join at solid end, continuous mid, terminal at LNR end
+        const fromSolid =
+          phantomStart.getTime() >= dayStart.getTime() &&
+          phantomStart.getTime() < dayEnd.getTime()
+        const toEnd =
+          phantomEnd.getTime() > dayStart.getTime() &&
+          phantomEnd.getTime() <= dayEnd.getTime()
+        const roleClass = [
+          fromSolid ? 'rest-phantom--from-solid' : '',
+          toEnd ? 'rest-phantom--to-end' : '',
+          !fromSolid && !toEnd ? 'rest-phantom--continue' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')
+
+        // Center thinner contour on the solid rest track
+        let phantomTop = '30%'
+        const solidOnDay = dayEvents.find((e) => e.id === rest.id)
+        if (solidOnDay) {
+          const overlappingRest = dayEvents.find(
+            (e) =>
+              e.type === 'rest' &&
+              e.id !== rest.id &&
+              eventsOverlap(e.start, e.end, rest.start, rest.end),
+          )
+          if (overlappingRest) {
+            const thisDuration = rest.end.getTime() - rest.start.getTime()
+            const otherDuration =
+              overlappingRest.end.getTime() - overlappingRest.start.getTime()
+            if (thisDuration > otherDuration) phantomTop = '42%'
+          }
+        }
+
+        // Tuck under solid end so the join has no visible start edge
+        const leftAdj = fromSolid ? `calc(${pLeft}% - 2px)` : `${pLeft}%`
+        const widthAdj = fromSolid
+          ? `calc(${pWidth}% + 2px)`
+          : `${pWidth}%`
+
+        allBars.push(
+          <div
+            key={`${rest.id}-phantom-70041-${dayStart.toISOString()}`}
+            className={`event-bar rest-phantom ${roleClass}`}
+            style={{
+              left: leftAdj,
+              width: widthAdj,
+              top: phantomTop,
+            }}
+            title={`Because this duty is ${phantom.thisDutyLabel}: if next is ${phantom.ifNextLabel} → LNR to ${phantomEnd.toLocaleString()} (CAR 700.41)`}
+            onClick={(e) => {
+              e.stopPropagation()
+              openInfoSheet(
+                infoSheetFromPhantomDisruptiveRest({
+                  solidRestEnd: rest.end,
+                  phantomEnd,
+                  thisDutyLabel: phantom.thisDutyLabel,
+                  ifNextLabel: phantom.ifNextLabel,
+                  reason: phantom.reason,
+                }),
+                { kind: 'generic' },
+              )
+            }}
+          />,
+        )
+      }
+    }
 
     const markerElements = allMarkers.map((marker, index) => {
       const anchor = markerBarAnchor(marker.type)
@@ -302,10 +564,12 @@ function Calendar() {
         marker.type === 'LNR' ||
         marker.type === 'LNR2' ||
         marker.type === 'LNR3' ||
-        marker.type === 'RR'
+        marker.type === 'RR' ||
+        marker.type === 'SDF'
       const isWide =
         marker.type === 'LNR2' ||
         marker.type === 'LNR3' ||
+        marker.type === 'SDF' ||
         (marker.violated && restMarker)
       const violatedClass = marker.violated && restMarker
       const gap = 'var(--marker-gap, 6px)'
@@ -351,7 +615,20 @@ function Calendar() {
           aria-label={`${explanation.label}. Tap for definition and why it applies.`}
           onClick={(e) => {
             e.stopPropagation()
-            setMarkerInfo(explanation)
+            // Rest marker and rest bar share the same event sheet.
+            // Duty classification chips keep marker-specific rule text.
+            if (marker.event.type === 'rest') {
+              openInfoSheet(
+                explainEvent(marker.event, regulator, acclTZ, homeBaseTZ),
+                { kind: 'event', event: marker.event, marker: marker.type },
+              )
+            } else {
+              openInfoSheet(infoSheetFromMarker(explanation), {
+                kind: 'event',
+                event: marker.event,
+                marker: marker.type,
+              })
+            }
           }}
         >
           {label}
@@ -359,15 +636,115 @@ function Calendar() {
       )
     })
 
-    return [...allBars, ...markerElements]
+    // SDF chips: load-bearing, completed free day before next, or prospective slot
+    const sdfMarkers = sdfsOnDay(date).map((display, index) => {
+      const sdf = display.sdf
+      const prospective = display.reasons.includes('prospective')
+      const { left, width } = dayBarPosition(
+        sdf.start,
+        sdf.end,
+        dayStart,
+        dayEnd,
+      )
+      const gap = 'var(--marker-gap, 6px)'
+      const chipW = 'var(--marker-chip-width-wide, 2.4em)'
+      const chipH = 'var(--marker-chip-height, 1.2em)'
+      const preferredLeft = `calc(${left + width / 2}% - ${chipW} / 2)`
+      const leftStyle = `clamp(${gap}, ${preferredLeft}, calc(100% - ${gap} - ${chipW}))`
+      const top = `clamp(${gap}, calc(100% - ${gap} - ${chipH} - 14px), calc(100% - ${gap} - ${chipH}))`
+      return (
+        <button
+          type="button"
+          key={`sdf-${sdf.start.toISOString()}-${dayStart.toISOString()}-${index}`}
+          className={`marker marker-anchored marker-button SDF${prospective ? ' SDF-prospective' : ''}`}
+          style={{ top, left: leftStyle }}
+          title={
+            prospective
+              ? 'Single day free from duty needed before further duty (CAR 700.29) — tap for details'
+              : 'Single day free from duty (CAR 700.29) — tap for details'
+          }
+          aria-label={
+            prospective
+              ? 'Single day free from duty needed. Tap for definition and why it applies.'
+              : 'Single day free from duty. Tap for definition and why it applies.'
+          }
+          onClick={(e) => {
+            e.stopPropagation()
+            openInfoSheet(infoSheetFromSdf(sdf, display.reasons), {
+              kind: 'sdf',
+              sdf,
+              reasons: display.reasons,
+            })
+          }}
+        >
+          {prospective ? 'SDF?' : markerChipLabel('SDF')}
+        </button>
+      )
+    })
+
+    return [...allBars, ...markerElements, ...sdfMarkers]
   }
 
   const getDayActions = (date: Date) => {
     const duties = findDutiesOnDate(events, date)
     if (duties.length > 0) {
-      return ['Edit Duty', 'Delete Duty', 'Required Rest']
+      return [
+        'Edit Duty',
+        'Delete Duty',
+        'Add Reserve',
+        'Add Standby',
+        'Add Free Time',
+        'Suggest Free Time',
+      ]
     }
-    return ['Add Duty', 'Required Rest']
+    return [
+      'Add Duty',
+      'Add Reserve',
+      'Add Standby',
+      'Add Free Time',
+      'Suggest Free Time',
+    ]
+  }
+
+  const addAuxEvent = (type: 'reserve' | 'standby' | 'free', date: Date) => {
+    const start = combineLocalDateAndTime(date, '08:00')
+    const end = combineLocalDateAndTime(date, type === 'free' ? '20:00' : '18:00')
+    // Multi-day free default for free: 2 nights worth will be adjusted by user
+    const endFree =
+      type === 'free'
+        ? new Date(start.getTime() + 40 * 60 * 60 * 1000)
+        : end
+    const ev: DutyEvent = {
+      id: createId(`-${type}`),
+      title:
+        type === 'reserve'
+          ? 'Reserve'
+          : type === 'standby'
+            ? 'Standby'
+            : 'Time free from duty',
+      start,
+      end: type === 'free' ? endFree : end,
+      type,
+      acclTZ,
+      workFactor: defaultWorkFactor(type),
+      freePurpose: type === 'free' ? 'manual' : undefined,
+      restRule: type === 'free' ? 'CAR 700.29' : undefined,
+    }
+    setEvents((prev) => [...prev, ev])
+    setShowMenu(false)
+    setSelectedDate(null)
+  }
+
+  const openFreeSuggestions = () => {
+    const props = proposeFreeBlocks(
+      events,
+      acclTZ,
+      timeFreeOption,
+      selectedDate ? startOfLocalDay(selectedDate) : null,
+    )
+    setFreeProposals(props)
+    setShowFreeProposals(true)
+    setShowMenu(false)
   }
 
   const handleMouseDown = (date: Date) => {
@@ -432,17 +809,48 @@ function Calendar() {
     clearDaySelection()
   }
 
+  /**
+   * Move start date; shift end date by the same number of civil days so the
+   * FDP duration (and overnight span) is preserved. Avoids an accidentally
+   * multi-day “long duty” when only the start day was moved.
+   */
+  const applyStartDateChange = (newStartYmd: string) => {
+    if (!newStartYmd) return
+    const newStart = parseDateInputValue(newStartYmd)
+    if (!newStart) return
+
+    const prevStartYmd = addDutyDate
+      ? toLocalDateInputValue(addDutyDate)
+      : newStartYmd
+    const delta = daysBetweenDateInputValues(prevStartYmd, newStartYmd)
+
+    setAddDutyDate(newStart)
+    selectDate(newStart)
+
+    if (delta === 0) return
+
+    if (endDate) {
+      const shiftedEnd = addDaysToDateInputValue(endDate, delta)
+      if (shiftedEnd !== endDate) {
+        setEndDate(shiftedEnd)
+        setEndDateShouldBlink(true)
+        setEndDateBlinkKey((k) => k + 1)
+      }
+    } else {
+      setEndDate(newStartYmd)
+    }
+  }
+
   const handleClick = (date: Date) => {
     if (showMenu) return
     if (showAddDuty) {
-      setAddDutyDate(date)
-      setEndDate(toLocalDateInputValue(date))
-      selectDate(date)
+      applyStartDateChange(toLocalDateInputValue(date))
     } else if (isEdit) {
       const duty = findDutyOnDate(events, date)
       if (duty) {
         selectDate(date)
         setEditEvent(duty)
+        setAddDutyDate(startOfLocalDay(duty.start))
         setStartTime(formatHHmm(duty.start))
         setEndDate(toLocalDateInputValue(duty.end))
         setEndTime(formatHHmm(duty.end))
@@ -489,7 +897,7 @@ function Calendar() {
 
     setIsEdit(true)
     setEditEvent(event)
-    setAddDutyDate(selectedDate)
+    setAddDutyDate(startOfLocalDay(event.start))
     setStartTime(formatHHmm(event.start))
     setEndDate(toLocalDateInputValue(event.end))
     setEndTime(formatHHmm(event.end))
@@ -515,9 +923,10 @@ function Calendar() {
     const event = findDutyOnDate(events, selectedDate)
     if (!event) return
     setEvents((prev) =>
-      recomputeLocalNightRests(
+      recomputeAfterDutyDelete(
         removeDutyAndRelated(prev, event),
         regulator,
+        homeBaseTZ,
         acclTZ,
       ),
     )
@@ -584,9 +993,61 @@ function Calendar() {
       )
     ) {
       setValidationMessage(
-        `Total hours of work in 7 days would exceed ${MAX_WEEKLY_DUTY_HOURS} hours for ${regulator === 'TC' ? 'CAR 705' : regulator}`,
+        `Total hours of work in 7 days would exceed ${MAX_WEEKLY_DUTY_HOURS} hours for ${regulator === 'TC' ? 'CAR 700.29' : regulator}`,
       )
       return
+    }
+
+    // Preview 700.29 Option C on the schedule that would result after this save
+    if (regulator === 'TC') {
+      const previewDuty: DutyEvent = {
+        id: isEdit && editEvent ? editEvent.id : 'preview-duty',
+        title: 'Duty Period',
+        start,
+        end,
+        type: 'duty',
+        acclTZ: dutyAccl,
+        startTZ: dutyStartLoc,
+        endTZ: dutyEndLoc,
+      }
+      const base = events.filter(
+        (e) =>
+          e.type === 'duty' &&
+          !(isEdit && editEvent && e.id === editEvent.id),
+      )
+      const previewReport = evaluate70029(
+        [...base, previewDuty],
+        dutyAccl,
+        'TC',
+        timeFreeOption,
+      )
+      if (hasHard70029HourViolation(previewReport)) {
+        const hard = previewReport.violations.find((v) =>
+          hasHard70029HourViolation({
+            ...previewReport,
+            violations: [v],
+          }),
+        )
+        setValidationMessage(
+          hard?.detail ||
+            'Hours of work or Option D conditions would breach CAR 700.29.',
+        )
+        return
+      }
+      // Soft: missing SDF — allow save but alert + offer free-time suggest
+      if (hasSoft70029SdfWarning(previewReport)) {
+        const soft = previewReport.violations
+          .filter(
+            (v) =>
+              v.code === 'missing_sdf_in_168' ||
+              v.code === 'missing_sdf_count_in_672',
+          )
+          .map((v) => v.detail)
+          .join('\n\n')
+        alert(
+          `Time free from duty warning (CAR 700.29):\n\n${soft}\n\nUse “Suggest Free Time” from the day menu to auto-schedule days free from duty.`,
+        )
+      }
     }
 
     if (isEdit && editEvent) {
@@ -896,12 +1357,32 @@ function Calendar() {
                   >
                     <span className="day-number">{date.getDate()}</span>
                     {renderEventBars(date)}
-                    {dayEvents.some((e) => e.violated) && (
+                    {(dayEvents.some((e) => e.violated) ||
+                      report70029.violations.some((v) => {
+                        const ds = startOfLocalDay(date)
+                        const de = new Date(ds)
+                        de.setDate(de.getDate() + 1)
+                        return v.windowEnd >= ds && v.windowEnd < de
+                      })) && (
                       <div
                         className="violation-icon"
                         style={{ left: `${violationLeft}%`, bottom: '2px' }}
                         onClick={(e) => {
                           e.stopPropagation()
+                          const dayStart = startOfLocalDay(date)
+                          const dayEnd = new Date(dayStart)
+                          dayEnd.setDate(dayEnd.getDate() + 1)
+                          const v700 = report70029.violations.find(
+                            (v) =>
+                              v.windowEnd >= dayStart && v.windowEnd < dayEnd,
+                          )
+                          if (v700) {
+                            openInfoSheet(
+                              infoSheetFrom70029Violation(v700),
+                              { kind: 'violation', violation: v700 },
+                            )
+                            return
+                          }
                           const lnrMsg = summarizeViolatedLnrs(dayEvents)
                           if (lnrMsg) {
                             alert(lnrMsg)
@@ -961,15 +1442,19 @@ function Calendar() {
                             ? 'day-details-btn day-details-btn-primary'
                             : 'day-details-btn day-details-btn-secondary'
                       }
-                      onClick={
-                        action === 'Add Duty'
-                          ? handleAddDuty
-                          : action === 'Edit Duty'
-                            ? handleEditDuty
-                            : action === 'Delete Duty'
-                              ? handleDeleteDuty
-                              : () => alert(action)
-                      }
+                      onClick={() => {
+                        if (action === 'Add Duty') handleAddDuty()
+                        else if (action === 'Edit Duty') handleEditDuty()
+                        else if (action === 'Delete Duty') handleDeleteDuty()
+                        else if (action === 'Add Reserve' && selectedDate)
+                          addAuxEvent('reserve', selectedDate)
+                        else if (action === 'Add Standby' && selectedDate)
+                          addAuxEvent('standby', selectedDate)
+                        else if (action === 'Add Free Time' && selectedDate)
+                          addAuxEvent('free', selectedDate)
+                        else if (action === 'Suggest Free Time')
+                          openFreeSuggestions()
+                      }}
                     >
                       {action}
                     </button>
@@ -1011,6 +1496,38 @@ function Calendar() {
                   >
                     Add Duty
                   </button>
+                  {menuDate && (
+                    <>
+                      <button
+                        type="button"
+                        className="day-details-btn day-details-btn-secondary"
+                        onClick={() => addAuxEvent('reserve', menuDate)}
+                      >
+                        Add Reserve
+                      </button>
+                      <button
+                        type="button"
+                        className="day-details-btn day-details-btn-secondary"
+                        onClick={() => addAuxEvent('standby', menuDate)}
+                      >
+                        Add Standby
+                      </button>
+                      <button
+                        type="button"
+                        className="day-details-btn day-details-btn-secondary"
+                        onClick={() => addAuxEvent('free', menuDate)}
+                      >
+                        Add Free Time
+                      </button>
+                      <button
+                        type="button"
+                        className="day-details-btn day-details-btn-secondary"
+                        onClick={openFreeSuggestions}
+                      >
+                        Suggest Free Time
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -1022,6 +1539,15 @@ function Calendar() {
                 {isEdit ? 'Edit Duty' : 'Add Duty'} for{' '}
                 {addDutyDate.toDateString()}
               </h3>
+              <label>
+                Start Date:
+                <input
+                  type="date"
+                  value={toLocalDateInputValue(addDutyDate)}
+                  onChange={(e) => applyStartDateChange(e.target.value)}
+                  aria-label="Start date"
+                />
+              </label>
               <label>
                 Start Time:
                 <FreeTimeInput
@@ -1245,113 +1771,216 @@ function Calendar() {
           )}
         </div>
       </div>
-      {showRestDetails && selectedRest && (
+      {showFreeProposals && (
         <div
-          className="modal-overlay"
-          onClick={() => {
-            setShowRestDetails(false)
-            setSelectedRest(null)
-          }}
+          className="info-sheet-overlay"
+          onClick={() => setShowFreeProposals(false)}
+          role="presentation"
         >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>{selectedRest.title}</h3>
-            {selectedRest.restRule && (
-              <p>
-                <strong>Reference:</strong> {selectedRest.restRule}
-              </p>
-            )}
-            {selectedRest.requiredRestHours != null && (
-              <p>
-                <strong>Minimum clock rest:</strong>{' '}
-                {selectedRest.requiredRestHours} h
-              </p>
-            )}
-            {selectedRest.requiredLocalNights != null &&
-              selectedRest.requiredLocalNights > 0 && (
-                <p>
-                  <strong>Local nights required:</strong>{' '}
-                  {selectedRest.requiredLocalNights}
+          <div
+            className="info-sheet free-proposals-sheet"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-labelledby="free-proposals-title"
+          >
+            <header className="info-sheet-header">
+              <div className="info-sheet-heading">
+                <span className="info-sheet-badge">Free</span>
+                <div className="info-sheet-title-block">
+                  <h2 id="free-proposals-title" className="info-sheet-title">
+                    Suggest free time (CAR 700.29)
+                  </h2>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="info-sheet-close"
+                aria-label="Close"
+                onClick={() => setShowFreeProposals(false)}
+              >
+                <IconClose size={18} />
+              </button>
+            </header>
+            <div className="info-sheet-body">
+              {freeProposals.length === 0 ? (
+                <p className="info-sheet-section-text">
+                  No automatic free-time block could be placed without
+                  overlapping existing duty, reserve, or standby. Add free time
+                  manually or free up the schedule.
                 </p>
+              ) : (
+                freeProposals.map((p) => (
+                  <section key={p.id} className="info-sheet-section">
+                    <div className="info-sheet-section-label">
+                      {p.purpose === 'five_lnr_block'
+                        ? 'Option D · 5× LNR'
+                        : 'Option C · SDF'}
+                    </div>
+                    <p className="info-sheet-section-text">
+                      {p.start.toLocaleString()} → {p.end.toLocaleString()}
+                    </p>
+                    <p className="info-sheet-section-text">{p.reason}</p>
+                    <button
+                      type="button"
+                      className="info-sheet-btn info-sheet-btn-primary"
+                      style={{ marginTop: '0.5rem' }}
+                      onClick={() => {
+                        const free = freeEventFromProposal(p, acclTZ)
+                        setEvents((prev) => [...prev, free])
+                        setShowFreeProposals(false)
+                        setFreeProposals([])
+                      }}
+                    >
+                      Apply this free block
+                    </button>
+                  </section>
+                ))
               )}
-            {selectedRest.ruleWhy && (
-              <p className="marker-why">{selectedRest.ruleWhy}</p>
-            )}
-            <p>Start: {selectedRest.start.toLocaleString()}</p>
-            <p>End: {selectedRest.end.toLocaleString()}</p>
-            {selectedRest.violated && (
-              <p className="validation-error">
-                This rest requirement is not currently met.
-              </p>
-            )}
-            <div
-              style={{
-                display: 'flex',
-                gap: '1rem',
-                justifyContent: 'center',
-                marginTop: '1rem',
-              }}
-            >
-              <button
-                type="button"
-                style={{ background: 'red', color: 'white' }}
-                onClick={() => {
-                  if (
-                    confirm('Are you sure you want to delete this rest event?')
-                  ) {
-                    setEvents((prev) =>
-                      prev.filter((e) => e.id !== selectedRest.id),
-                    )
-                    setShowRestDetails(false)
-                    setSelectedRest(null)
-                  }
-                }}
-              >
-                Delete
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowRestDetails(false)
-                  setSelectedRest(null)
-                }}
-              >
-                OK
-              </button>
             </div>
+            <footer className="info-sheet-footer">
+              <button
+                type="button"
+                className="info-sheet-btn info-sheet-btn-primary"
+                onClick={() => setShowFreeProposals(false)}
+              >
+                Close
+              </button>
+            </footer>
           </div>
         </div>
       )}
 
-      {markerInfo && (
+      {infoSheet && (
         <div
-          className="modal-overlay"
-          onClick={() => setMarkerInfo(null)}
+          className="info-sheet-overlay"
+          onClick={() => setInfoSheet(null)}
+          role="presentation"
         >
           <div
-            className="modal marker-info-modal"
+            className={`info-sheet${infoSheet.violated ? ' info-sheet--alert' : ''}`}
             onClick={(e) => e.stopPropagation()}
             role="dialog"
-            aria-labelledby="marker-info-title"
+            aria-modal="true"
+            aria-labelledby="info-sheet-title"
           >
-            <h3 id="marker-info-title">
-              {markerInfo.marker}: {markerInfo.label}
-              {markerInfo.violated ? ' (not met)' : ''}
-            </h3>
-            <section className="marker-info-section">
-              <h4>Definition</h4>
-              <p>{markerInfo.definition}</p>
-            </section>
-            <section className="marker-info-section">
-              <h4>Regulatory reference</h4>
-              <p>{markerInfo.reference}</p>
-            </section>
-            <section className="marker-info-section">
-              <h4>Why it applies here</h4>
-              <p className="marker-why">{markerInfo.whyApplies}</p>
-            </section>
-            <button type="button" onClick={() => setMarkerInfo(null)}>
-              Close
-            </button>
+            <header className="info-sheet-header">
+              <div className="info-sheet-heading">
+                <span className="info-sheet-badge" aria-hidden="true">
+                  {infoSheet.badge}
+                </span>
+                <div className="info-sheet-title-block">
+                  <h2 id="info-sheet-title" className="info-sheet-title">
+                    {infoSheet.title}
+                  </h2>
+                  {infoSheet.violated && (
+                    <span className="info-sheet-status">Not met</span>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="info-sheet-close"
+                aria-label="Close"
+                onClick={() => setInfoSheet(null)}
+              >
+                <IconClose size={18} />
+              </button>
+            </header>
+
+            {infoSheet.meta && infoSheet.meta.length > 0 && (
+              <ul className="info-sheet-meta">
+                {infoSheet.meta.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            )}
+
+            <div className="info-sheet-body">
+              <section className="info-sheet-section">
+                <div className="info-sheet-section-label">
+                  <span className="info-sheet-step">1</span>
+                  Rule
+                </div>
+                <p className="info-sheet-section-text">{infoSheet.rule}</p>
+              </section>
+
+              <section className="info-sheet-section">
+                <div className="info-sheet-section-label">
+                  <span className="info-sheet-step">2</span>
+                  Legal reference
+                </div>
+                <p className="info-sheet-section-text info-sheet-reference">
+                  {infoSheet.reference}
+                </p>
+              </section>
+
+              <section className="info-sheet-section">
+                <div className="info-sheet-section-label">
+                  <span className="info-sheet-step">3</span>
+                  Why it applies here
+                </div>
+                <p className="info-sheet-section-text">{infoSheet.whyApplies}</p>
+              </section>
+
+              {infoSheet.debugContext && (
+                <section className="info-sheet-section info-sheet-section-debug">
+                  <div className="info-sheet-section-label">
+                    <span className="info-sheet-step">4</span>
+                    Debug for AI
+                    <button
+                      type="button"
+                      className="info-sheet-copy-btn"
+                      onClick={() => void copyDebugContext()}
+                    >
+                      {debugCopied ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                  <p className="info-sheet-section-hint">
+                    Full schedule context for pasting into a coding chat
+                    (times, ELN, WOCL, rest rules, 700.29).
+                  </p>
+                  <pre className="info-sheet-debug">{infoSheet.debugContext}</pre>
+                </section>
+              )}
+            </div>
+
+            <footer className="info-sheet-footer">
+              {infoSheet.canDelete && infoSheet.eventId && (
+                <button
+                  type="button"
+                  className="info-sheet-btn info-sheet-btn-danger"
+                  onClick={() => {
+                    if (
+                      confirm(
+                        'Delete this rest event from the calendar?',
+                      )
+                    ) {
+                      const id = infoSheet.eventId
+                      setEvents((prev) => prev.filter((e) => e.id !== id))
+                      setInfoSheet(null)
+                    }
+                  }}
+                >
+                  Delete
+                </button>
+              )}
+              {infoSheet.debugContext && (
+                <button
+                  type="button"
+                  className="info-sheet-btn info-sheet-btn-secondary"
+                  onClick={() => void copyDebugContext()}
+                >
+                  {debugCopied ? 'Copied' : 'Copy debug'}
+                </button>
+              )}
+              <button
+                type="button"
+                className="info-sheet-btn info-sheet-btn-primary"
+                onClick={() => setInfoSheet(null)}
+              >
+                Close
+              </button>
+            </footer>
           </div>
         </div>
       )}

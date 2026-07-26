@@ -9,6 +9,8 @@ import {
   getDutyMarkers,
   type DutyMarker,
 } from './regulations'
+import type { C70029Violation, SingleDayFree } from './rest-70029'
+import { explainSingleDayFree } from './rest-70029'
 import { getZonedTimeParts, hoursBetweenTimeZones } from './time'
 
 export interface MarkerExplanation {
@@ -19,6 +21,31 @@ export interface MarkerExplanation {
   /** Why this marker applies to this specific event. */
   whyApplies: string
   violated?: boolean
+}
+
+/** Unified info sheet for marker chips and calendar events. */
+export interface InfoSheetContent {
+  /** Short badge / chip text (e.g. "E", "Duty", "Rest") */
+  badge: string
+  /** Main title */
+  title: string
+  /** Section 1 — what the rule is */
+  rule: string
+  /** Section 2 — legal / regulatory citation */
+  reference: string
+  /** Section 3 — why it applies to this instance */
+  whyApplies: string
+  /**
+   * Section 4 — dense pasteable schedule/debug dump for coding chats
+   * (duty times, ELN, WOCL, rest rules, 700.29 snapshot).
+   */
+  debugContext?: string
+  /** Optional meta lines under the header (times, duration, etc.) */
+  meta?: string[]
+  violated?: boolean
+  /** Optional secondary action (e.g. delete rest) */
+  canDelete?: boolean
+  eventId?: string
 }
 
 const DEFINITIONS: Record<
@@ -67,6 +94,12 @@ const DEFINITIONS: Record<
     definition:
       'Minimum rest period after a flight duty period. Under CAR 700.40 this is typically 10–12 hours depending on location and accommodation; CAR 700.42 may increase the minimum when time zones differ.',
     reference: 'CAR 700.40; CAR 700.42(1)/(2); AC 700-047 §§4.37–4.44',
+  },
+  SDF: {
+    label: 'Single day free from duty',
+    definition:
+      'Time free from duty from the beginning of the first local night’s rest until the end of the following local night’s rest (two consecutive local nights with no duty between). Under the 60-hour option, at least one such day must fall entirely within any 168 consecutive hours, and four within any 672 consecutive hours.',
+    reference: 'CAR 700.29(1)(c); AC 700-047 §§2.3(i), 4.31–4.32',
   },
 }
 
@@ -225,4 +258,272 @@ export function dutyClassificationSummary(
   if (dutyHasLateMarker(event, regulator, globalAcclTZ)) parts.push('Late')
   if (dutyHasNightMarker(event, regulator, globalAcclTZ)) parts.push('Night')
   return parts.length ? parts.join(' + ') : 'Standard day duty'
+}
+
+function formatWhen(d: Date): string {
+  return d.toLocaleString(undefined, {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function restRuleDefinition(rule?: RestRuleCode): {
+  title: string
+  rule: string
+  reference: string
+} {
+  switch (rule) {
+    case 'CAR 700.41':
+      return {
+        title: 'Local night’s rest (disruptive schedule)',
+        rule: 'When switching between late/night and early duties (or the reverse), the operator must provide a rest period that includes one local night’s rest — at least nine hours of rest inside 22:30–09:30 acclimatized local time — in addition to the rest required under section 700.40.',
+        reference: 'CAR 700.41; AC 700-047 §§2.3(e), 4.41–4.42',
+      }
+    case 'CAR 700.42(1)':
+      return {
+        title: 'Rest — time zone difference (away from base)',
+        rule: 'When a flight duty period ends away from home base, rest in suitable accommodation is increased to 11 hours if local time at start and end differs by four hours, or 14 hours if the difference is more than four hours.',
+        reference: 'CAR 700.42(1); AC 700-047 §4.43',
+      }
+    case 'CAR 700.42(2)':
+      return {
+        title: 'Rest — time zone difference (return to base)',
+        rule: 'When a flight duty period starts away from home base and ends at home base, additional rest or one to three local nights’ rest may be required depending on the time-zone difference, time away from base, and whether the return duty touches the WOCL.',
+        reference: 'CAR 700.42(2); AC 700-047 §4.44',
+      }
+    case 'CAR 700.51':
+      return {
+        title: 'Local night’s rest after consecutive WOCL duties',
+        rule: 'No more than three consecutive flight duty periods may each touch the window of circadian low (02:00–05:59 acclimatized) unless the crew member is provided with one local night’s rest at the end of the third such duty before the next flight duty period.',
+        reference: 'CAR 700.51; AC 700-047 §4.54',
+      }
+    case 'CAR 700.29':
+      return {
+        title: 'Single day free from duty (two local nights)',
+        rule: 'Under the 60-hour option, when hours of work and activity in any 168 consecutive hours require free-time structure, the flight crew member must receive one single day free from duty entirely within that period — time free from duty from the beginning of the first local night’s rest until the end of the following local night’s rest (two consecutive local nights). WiseDuty attaches that two-night requirement to the required rest after the FDP that ends the window, the same way consecutive WOCL duties attach a local night under CAR 700.51.',
+        reference: 'CAR 700.29(1)(c); AC 700-047 §§2.3(i), 4.31–4.32',
+      }
+    case 'CAR 700.40':
+    default:
+      return {
+        title: 'Required rest period',
+        rule: 'After a flight duty period, the operator must provide a continuous rest period meeting the minimum under CAR 700.40 (typically 10–12 hours depending on home base, travel time, and suitable accommodation). Other rules may increase this minimum.',
+        reference: 'CAR 700.40; AC 700-047 §§4.37–4.40',
+      }
+  }
+}
+
+/**
+ * Convert a marker explanation into the shared info-sheet model.
+ */
+export function infoSheetFromMarker(m: MarkerExplanation): InfoSheetContent {
+  return {
+    badge: m.marker,
+    title: m.label,
+    rule: m.definition,
+    reference: m.reference,
+    whyApplies: m.whyApplies,
+    violated: m.violated,
+  }
+}
+
+/**
+ * Info sheet for the outline phantom rest (700.41 what-if contour).
+ * Distinct from the solid rest bar sheet — explains the contour itself.
+ * Language is directional: because this duty is X, if next is Y → LNR.
+ */
+export function infoSheetFromPhantomDisruptiveRest(opts: {
+  solidRestEnd: Date
+  phantomEnd: Date
+  thisDutyLabel: string
+  ifNextLabel: string
+  reason: string
+}): InfoSheetContent {
+  const rule =
+    opts.thisDutyLabel === 'early'
+      ? 'Because this duty is early (report 02:00–06:59 acclimatized), if the next duty is night or late, CAR 700.41 requires one local night’s rest (LNR) before that next FDP — not only the usual 700.40 clock rest. This outline shows how far that LNR would run. It is not required unless the next duty is actually night or late.'
+      : opts.thisDutyLabel.startsWith('night')
+        ? 'Because this duty is night (and/or late), if the next duty is early, CAR 700.41 requires one local night’s rest (LNR) before that next FDP — not only the usual 700.40 clock rest. This outline shows how far that LNR would run. It is not required unless the next duty is actually early.'
+        : 'Because this duty is late (release 00:00–01:59 acclimatized), if the next duty is early, CAR 700.41 requires one local night’s rest (LNR) before that next FDP — not only the usual 700.40 clock rest. This outline shows how far that LNR would run. It is not required unless the next duty is actually early.'
+
+  return {
+    badge: 'Outline',
+    title: `If next duty is ${opts.ifNextLabel} → LNR required`,
+    rule,
+    reference: 'CAR 700.41; AC 700-047 §§4.41–4.42',
+    whyApplies: opts.reason,
+    meta: [
+      `This duty · ${opts.thisDutyLabel}`,
+      `LNR only if next duty is · ${opts.ifNextLabel}`,
+      `Solid rest (applies now) ends · ${opts.solidRestEnd.toLocaleString()}`,
+      `Outline (what-if LNR) ends · ${opts.phantomEnd.toLocaleString()}`,
+      'Tap the solid bar for the rest that actually applies now',
+    ],
+  }
+}
+
+/** Info sheet for a detected single day free from duty (CAR 700.29). */
+export function infoSheetFromSdf(
+  sdf: SingleDayFree,
+  reasons?: string[],
+): InfoSheetContent {
+  const copy = explainSingleDayFree(sdf)
+  const isProspective = reasons?.includes('prospective')
+  const whyExtra =
+    reasons && reasons.length
+      ? reasons
+          .map((r) =>
+            r === 'load_bearing'
+              ? 'Shown because this free day is needed to keep a 168 h / 672 h window compliant (removing it would risk a CAR 700.29 free-time violation).'
+              : r === 'required_before_next'
+                ? 'Shown because recent work intensity means a single day free from duty is needed before further duty in the rolling 168 h window.'
+                : r === 'prospective'
+                  ? 'Not yet completed — this is the earliest two local nights after your last duty where a single day free from duty can still be taken. Schedule free time covering this period before adding more flight duty, or the rolling 168 h window may close without a free day.'
+                  : r,
+          )
+          .join(' ')
+      : ''
+  return {
+    badge: isProspective ? 'SDF?' : 'SDF',
+    title: isProspective
+      ? 'Single day free from duty needed'
+      : 'Single day free from duty',
+    rule: copy.rule,
+    reference: copy.reference,
+    whyApplies: isProspective
+      ? whyExtra
+      : [copy.whyApplies, whyExtra].filter(Boolean).join(' '),
+    meta: [
+      `Start · ${sdf.start.toLocaleString()}`,
+      `End · ${sdf.end.toLocaleString()}`,
+      `Acclimatized TZ · ${sdf.acclTZ.replace(/_/g, ' ')}`,
+      `Local nights · ${sdf.nights[0].windowKey} → ${sdf.nights[1].windowKey}`,
+      ...(reasons?.length
+        ? [`Display · ${reasons.join(', ')}`]
+        : []),
+    ],
+  }
+}
+
+/** Info sheet for a 700.29 window violation. */
+export function infoSheetFrom70029Violation(
+  v: C70029Violation,
+): InfoSheetContent {
+  const hard =
+    v.code === 'work_60_in_168' ||
+    v.code === 'work_192_in_672' ||
+    v.code === 'work_2200_in_365'
+  return {
+    badge: hard ? '700.29' : 'SDF?',
+    title: hard
+      ? 'Hours of work limit (CAR 700.29)'
+      : 'Time free from duty (CAR 700.29)',
+    rule: hard
+      ? 'A flight crew member’s hours of work must not exceed 2,200 h in 365 days, 192 h in 28 days, or (under the standard option) 60 h in 7 consecutive days when the required single days free from duty are provided.'
+      : 'Under CAR 700.29(1)(c), the 60 h / 7-day limit applies only when the member also receives at least one single day free from duty entirely within each 168 consecutive hours, and four such days within each 672 consecutive hours.',
+    reference: 'CAR 700.29(1); AC 700-047 §§4.31–4.32',
+    whyApplies: v.detail,
+    meta: [
+      `Window · ${v.windowStart.toLocaleString()} → ${v.windowEnd.toLocaleString()}`,
+      ...(v.workHours != null
+        ? [`Work in window · ${v.workHours.toFixed(1)} h`]
+        : []),
+      ...(v.sdfCount != null ? [`SDFs fully inside · ${v.sdfCount}`] : []),
+    ],
+    violated: true,
+  }
+}
+
+/**
+ * Build a three-section info sheet for a duty or rest calendar bar.
+ */
+export function explainEvent(
+  event: DutyEvent,
+  regulator: Regulator,
+  globalAcclTZ: string,
+  homeBaseTZ?: string,
+): InfoSheetContent {
+  const accl = locationTZ(event, 'accl', globalAcclTZ)
+  const startLoc = locationTZ(event, 'start', globalAcclTZ)
+  const endLoc = locationTZ(event, 'end', globalAcclTZ)
+  const home = homeBaseTZ || globalAcclTZ
+  const hours =
+    (event.end.getTime() - event.start.getTime()) / (1000 * 60 * 60)
+  const regLabel =
+    regulator === 'TC' ? 'Transport Canada (CAR Subpart 700)' : regulator
+
+  const meta = [
+    `Start · ${formatWhen(event.start)}`,
+    `End · ${formatWhen(event.end)}`,
+    `Duration · ${formatHours(hours)} h`,
+  ]
+
+  if (event.type === 'duty') {
+    const classification = dutyClassificationSummary(
+      event,
+      regulator,
+      globalAcclTZ,
+    )
+    meta.push(`Classification · ${classification}`)
+    meta.push(`Acclimatized TZ · ${zoneLabel(accl)}`)
+    if (startLoc !== endLoc || startLoc !== home) {
+      meta.push(
+        `Locations · start ${zoneLabel(startLoc)}, end ${zoneLabel(endLoc)}, home ${zoneLabel(home)}`,
+      )
+    }
+
+    let why = `This flight duty period runs ${formatHours(hours)} h from report to release, evaluated for ${regLabel} using acclimatized time in ${zoneLabel(accl)}.`
+    if (classification !== 'Standard day duty') {
+      why += ` It is classified as ${classification.toLowerCase()} for early/late/night rules (AC 700-047 §2.3).`
+    }
+    if (event.violated) {
+      why += ' A compliance flag is set (for example overlap with rest).'
+    }
+
+    return {
+      badge: 'Duty',
+      title: event.title || 'Flight duty period',
+      rule: 'A flight duty period (FDP) is the time from the earlier of report for duty, report for flight, positioning, or standby, until engines off / rotors stopped at the end of the last flight. Maximum FDP length depends on acclimatized start time, number of sectors, average sector time, and any augmentation or split-duty provisions.',
+      reference:
+        regulator === 'TC'
+          ? 'CAR 700.28 (maximum FDP); CAR 101 / AC 700-047 §2.3 (definitions); CAR 700.60–700.62 (augmented / ULR where applicable)'
+          : `${regLabel} flight duty period limitations`,
+      whyApplies: why,
+      meta,
+      violated: event.violated,
+      eventId: event.id,
+    }
+  }
+
+  // Rest event
+  const def = restRuleDefinition(event.restRule)
+  if (event.requiredRestHours != null) {
+    meta.push(`Minimum clock rest · ${formatHours(event.requiredRestHours)} h`)
+  }
+  if (event.requiredLocalNights != null && event.requiredLocalNights > 0) {
+    meta.push(`Local nights required · ${event.requiredLocalNights}`)
+  }
+  if (event.restRule) {
+    meta.push(`Rule · ${event.restRule}`)
+  }
+
+  const status = event.violated
+    ? 'This rest requirement is currently not met (insufficient gap and/or night window before the next duty).'
+    : 'Based on the current schedule, this rest requirement is met.'
+
+  return {
+    badge: event.isLocalNightRest ? 'LNR' : 'Rest',
+    title: def.title,
+    rule: def.rule,
+    reference: def.reference,
+    whyApplies: [event.ruleWhy, status].filter(Boolean).join(' '),
+    meta,
+    violated: event.violated,
+    canDelete: true,
+    eventId: event.id,
+  }
 }

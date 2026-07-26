@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { Regulator, TimeFormat } from '../../domain/types'
+import type { Regulator, TimeFormat, TimeFreeOption } from '../../domain/types'
 import { useSettings } from '../../features/settings/SettingsContext'
 import TimeZoneSelector from './TimeZoneSelector'
 import './SettingsPanel.css'
@@ -33,6 +33,8 @@ export default function SettingsPanel({
     setReferenceTZ,
     acclTZ,
     setAcclTZ,
+    timeFreeOption,
+    setTimeFreeOption,
   } = useSettings()
 
   const [showDeleteOptions, setShowDeleteOptions] = useState(false)
@@ -110,6 +112,24 @@ export default function SettingsPanel({
         Acclimatization Time Zone
         <TimeZoneSelector value={acclTZ} onChange={setAcclTZ} />
       </label>
+
+      <label>
+        Time free from duty (CAR 700.29)
+        <select
+          value={timeFreeOption}
+          onChange={(e) =>
+            setTimeFreeOption(e.target.value as TimeFreeOption)
+          }
+        >
+          <option value="auto">Auto (60 h, or 70 h when eligible)</option>
+          <option value="C">Option C — 60 h + single days free</option>
+          <option value="D">Option D — 70 h (5× LNR / 120 h free)</option>
+        </select>
+      </label>
+      <p className="settings-section-hint">
+        Option D requires 120 consecutive hours free including five consecutive
+        local nights before exceeding 60 h work in 7 days.
+      </p>
 
       {showCalendarData && (
         <section className="settings-danger-zone" aria-label="Calendar data">
