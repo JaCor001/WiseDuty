@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildPreferredHostMap,
   dayContentMinRem,
+  isHostDayFor,
   isPreferredMarkerDay,
   markerBandTiers,
   markerVerticalRole,
+  preferredMarkerHostDayStartMs,
   preferredMarkerLeftPct,
   preferredMarkerTopPct,
   resolveMarkerOverlaps,
   type MarkerLayoutInput,
   type ResolvedMarkerLayout,
 } from './marker-layout'
-import { startOfLocalDay } from './time'
+import { startOfDayInTimeZone, startOfLocalDay } from './time'
 
 describe('markerVerticalRole', () => {
   it('places E/L/N above the bar', () => {
@@ -272,5 +275,26 @@ describe('isPreferredMarkerDay', () => {
     const d11 = day(2024, 6, 11)
     expect(isPreferredMarkerDay(start, end, d10.s, d10.e)).toBe(true)
     expect(isPreferredMarkerDay(start, end, d11.s, d11.e)).toBe(false)
+  })
+
+  it('buildPreferredHostMap enables O(1) host checks', () => {
+    const start = new Date(2024, 5, 10, 14, 0, 0)
+    const end = new Date(2024, 5, 11, 2, 0, 0)
+    const map = buildPreferredHostMap(
+      [{ id: 'r1', start, end }],
+      'America/Toronto',
+    )
+    const host = preferredMarkerHostDayStartMs(
+      start,
+      end,
+      'America/Toronto',
+    )
+    expect(host).not.toBeNull()
+    expect(map.get('r1')).toBe(host!)
+    expect(isHostDayFor(map, 'r1', host!)).toBe(true)
+    const other = startOfDayInTimeZone(end, 'America/Toronto').getTime()
+    if (other !== host) {
+      expect(isHostDayFor(map, 'r1', other)).toBe(false)
+    }
   })
 })

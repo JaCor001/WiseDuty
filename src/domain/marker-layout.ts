@@ -5,7 +5,12 @@
  * All coordinates are percentages of the day cell (0–100).
  */
 
-import { dayBarPosition, startOfLocalDay } from './time'
+import {
+  addCivilDaysInTimeZone,
+  dayBarPosition,
+  startOfDayInTimeZone,
+  startOfLocalDay,
+} from './time'
 
 export type MarkerVerticalRole = 'above' | 'below'
 
@@ -301,18 +306,62 @@ export function parsePct(value: string, fallback = 46): number {
 }
 
 /**
+ * Absolute start-of-day (ms) that should host a center marker for [eventStart, eventEnd).
+ * Uses civil days in `displayTZ` when provided; otherwise browser-local days.
+ * Widest segment wins; earlier day wins ties. Returns null if interval is empty.
+ */
+export function preferredMarkerHostDayStartMs(
+  eventStart: Date,
+  eventEnd: Date,
+  displayTZ?: string,
+  opts?: { minWidthPct?: number },
+): number | null {
+  if (eventEnd.getTime() <= eventStart.getTime()) return null
+
+  const minWidthPct = opts?.minWidthPct ?? MIN_MARKER_BAR_WIDTH_PCT
+  let cursor = displayTZ
+    ? startOfDayInTimeZone(eventStart, displayTZ)
+    : startOfLocalDay(eventStart)
+  let bestDayStart = cursor.getTime()
+  let bestWidth = -1
+  let dayCount = 0
+
+  while (cursor.getTime() < eventEnd.getTime() && dayCount < 400) {
+    const d0 = cursor
+    const d1 = displayTZ
+      ? addCivilDaysInTimeZone(cursor, displayTZ, 1)
+      : (() => {
+          const n = new Date(cursor)
+          n.setDate(n.getDate() + 1)
+          return n
+        })()
+    if (eventStart < d1 && eventEnd > d0) {
+      dayCount += 1
+      const w = dayBarPosition(eventStart, eventEnd, d0, d1).width
+      if (w > bestWidth) {
+        bestWidth = w
+        bestDayStart = d0.getTime()
+      }
+    }
+    cursor = d1
+  }
+
+  if (dayCount === 0) return null
+  // Multi-day with only slivers: still return the best day
+  if (dayCount > 1 && bestWidth < minWidthPct) return bestDayStart
+  return bestDayStart
+}
+
+/**
  * Whether this local day should host a center-anchored event marker (RR/LNR/SDF).
- *
- * Picks the day with the **widest** bar segment for the event (ties → earlier day).
- * Multi-day slivers therefore never get the chip; the substantial day does.
- * Same-day events always qualify (even if short).
+ * Prefer `preferredMarkerHostDayStartMs` + O(1) map lookup in hot paths.
  */
 export function isPreferredMarkerDay(
   eventStart: Date,
   eventEnd: Date,
   dayStart: Date,
   dayEnd: Date,
-  opts?: { minWidthPct?: number },
+  opts?: { minWidthPct?: number; displayTZ?: string },
 ): boolean {
   if (eventEnd.getTime() <= eventStart.getTime()) return false
   if (
@@ -322,45 +371,51 @@ export function isPreferredMarkerDay(
     return false
   }
 
-  const minWidthPct = opts?.minWidthPct ?? MIN_MARKER_BAR_WIDTH_PCT
+  const host = preferredMarkerHostDayStartMs(
+    eventStart,
+    eventEnd,
+    opts?.displayTZ,
+    { minWidthPct: opts?.minWidthPct },
+  )
+  if (host == null) return false
+  if (dayStart.getTime() !== host) return false
+
   const thisWidth = dayBarPosition(
     eventStart,
     eventEnd,
     dayStart,
     dayEnd,
   ).width
+  const minWidthPct = opts?.minWidthPct ?? MIN_MARKER_BAR_WIDTH_PCT
+  // Single-day or host is the winner: allow even thin single-day bars
+  if (thisWidth >= minWidthPct) return true
+  // Host day is best even if thin (only remaining day)
+  return true
+}
 
-  let cursor = startOfLocalDay(eventStart)
-  let bestDayStart = cursor.getTime()
-  let bestWidth = -1
-  let dayCount = 0
-
-  // Walk each local civil day the interval touches
-  while (cursor.getTime() < eventEnd.getTime() && dayCount < 400) {
-    const d0 = new Date(cursor)
-    const d1 = new Date(cursor)
-    d1.setDate(d1.getDate() + 1)
-    if (eventStart < d1 && eventEnd > d0) {
-      dayCount += 1
-      const w = dayBarPosition(eventStart, eventEnd, d0, d1).width
-      // Strictly greater only → earlier day wins ties
-      if (w > bestWidth) {
-        bestWidth = w
-        bestDayStart = d0.getTime()
-      }
-    }
-    cursor = d1
+/**
+ * Precompute preferred host day-start ms for each rest (and optional SDF keys).
+ * Call once per schedule layout, not per day cell.
+ */
+export function buildPreferredHostMap(
+  intervals: Array<{ id: string; start: Date; end: Date }>,
+  displayTZ: string,
+): Map<string, number> {
+  const map = new Map<string, number>()
+  for (const iv of intervals) {
+    const host = preferredMarkerHostDayStartMs(iv.start, iv.end, displayTZ)
+    if (host != null) map.set(iv.id, host)
   }
+  return map
+}
 
-  if (dayStart.getTime() !== bestDayStart) return false
-
-  // Only day the event appears on — always show
-  if (dayCount <= 1) return true
-
-  // Multi-day: host day must be wide enough to place a chip cleanly
-  // (if even the widest day is a sliver, still show there rather than nowhere)
-  if (bestWidth < minWidthPct) return true
-  return thisWidth >= minWidthPct
+export function isHostDayFor(
+  hostMap: Map<string, number>,
+  id: string,
+  dayStartMs: number,
+): boolean {
+  const host = hostMap.get(id)
+  return host != null && host === dayStartMs
 }
 
 /**

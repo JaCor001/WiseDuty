@@ -1,11 +1,11 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
-  type ReactNode,
 } from 'react'
 import { Link } from 'react-router-dom'
 import './Calendar.css'
@@ -17,7 +17,6 @@ import {
   eventsOnLocalDay,
   findDutyOnDate,
   findDutiesOnDate,
-  phantomDisruptiveRestExtension,
   recomputeAfterDutyChange,
   recomputeAfterDutyDelete,
   removeDutyAndRelated,
@@ -43,25 +42,19 @@ import {
   type DebugFocus,
 } from './domain/info-sheet-debug'
 import {
-  dayContentMinRem,
-  isPreferredMarkerDay,
-  markerBandTiers,
-  markerVerticalRole,
-  preferredMarkerLeftPct,
-  preferredMarkerTopPct,
-  resolveMarkerOverlaps,
-  type MarkerLayoutInput,
-} from './domain/marker-layout'
+  buildPhantomSegments,
+  buildScheduleLayout,
+  type DayBarSpec,
+  type DayMarkerSpec,
+} from './domain/calendar-day-layout'
+import { buildPreferredHostMap } from './domain/marker-layout'
 import {
   eventsOverlap,
   getAbsoluteMaxFdpHours,
-  getDutyMarkers,
   getMaxFdpHours,
-  markerBarAnchor,
-  markerChipLabel,
   wouldExceedWeeklyLimit,
-  type DutyMarker,
 } from './domain/regulations'
+import { CalendarDayCell } from './CalendarDayCell'
 import {
   evaluate70029,
   hasHard70029HourViolation,
@@ -70,7 +63,6 @@ import {
 import {
   addCivilDaysInTimeZone,
   addDaysToDateInputValue,
-  dayBarPosition,
   daysBetweenDateInputValues,
   formatHHmmInTZ,
   formatTimeDisplay,
@@ -124,8 +116,6 @@ function Calendar() {
   const calendarTZ = resolvedCalendarTZ
 
   const dayStartInCal = (d: Date) => startOfDayInTimeZone(d, calendarTZ)
-  const dayEndInCal = (d: Date) =>
-    addCivilDaysInTimeZone(dayStartInCal(d), calendarTZ, 1)
 
   const [currentDate, setCurrentDate] = useState(() => new Date())
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
@@ -352,584 +342,233 @@ function Calendar() {
     return days
   }
 
-  const getDayStatus = (date: Date) => {
-    const dayEvents = eventsOnLocalDay(events, date, calendarTZ)
-    if (dayEvents.some((e) => e.violated)) return 'red'
-    const dayStart = dayStartInCal(date)
-    const dayEnd = dayEndInCal(date)
-    const has70029 = report70029.violations.some(
-      (v) => v.windowEnd >= dayStart && v.windowEnd < dayEnd,
+  const days = useMemo(
+    () => getCalendarDays(currentDate),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getCalendarDays closes over calendarTZ
+    [currentDate, calendarTZ],
+  )
+
+
+  // Layout once when schedule/view changes — NOT on selection clicks.
+  // Duty add/edit/delete still run recomputeAfterDuty* → setEvents → this rebuilds.
+  const scheduleLayout = useMemo(() => {
+    const restIntervals = events
+      .filter((e) => e.type === 'rest')
+      .map((e) => ({ id: e.id, start: e.start, end: e.end }))
+    const sdfIntervals = report70029.displaySdfs.map((d, i) => ({
+      id: `sdf-${d.sdf.start.toISOString()}-${i}`,
+      start: d.sdf.start,
+      end: d.sdf.end,
+    }))
+    const hostMap = buildPreferredHostMap(
+      [...restIntervals, ...sdfIntervals],
+      calendarTZ,
     )
-    if (has70029) return 'red'
-    if (dayEvents.some((e) => e.type === 'duty')) return 'blue'
-    if (
-      dayEvents.some((e) => e.type === 'rest') ||
-      report70029.displaySdfs.some(
-        (d) => d.sdf.start < dayEnd && d.sdf.end > dayStart,
-      )
-    ) {
-      return 'amber'
-    }
-    return 'white'
-  }
-
-  /** Display SDFs (load-bearing / required before next) that overlap a local day. */
-  const sdfsOnDay = (date: Date) => {
-    const dayStart = dayStartInCal(date)
-    const dayEnd = dayEndInCal(date)
-    return report70029.displaySdfs.filter(
-      (d) => d.sdf.start < dayEnd && d.sdf.end > dayStart,
+    const phantoms = buildPhantomSegments(events, regulator, acclTZ)
+    return buildScheduleLayout(
+      days,
+      currentDate,
+      events,
+      report70029.displaySdfs,
+      calendarTZ,
+      regulator,
+      acclTZ,
+      hostMap,
+      phantoms,
+      report70029.violations,
     )
-  }
+  }, [
+    days,
+    currentDate,
+    events,
+    calendarTZ,
+    regulator,
+    acclTZ,
+    report70029.displaySdfs,
+    report70029.violations,
+  ])
 
-  const renderEventBars = (date: Date) => {
-    const dayStart = dayStartInCal(date)
-    const dayEnd = dayEndInCal(date)
-    const dayEvents = eventsOnLocalDay(events, date, calendarTZ)
-    const allBars: ReactNode[] = []
-    /** Default / stacked rest bar tops — match Calendar.css --event-bar-top* */
-    const BAR_TOP = 'var(--event-bar-top, 46%)'
-    const BAR_TOP_OVERLAP = 'var(--event-bar-top-overlap, 56%)'
-    const BAR_TOP_PCT = 46
-    const BAR_TOP_OVERLAP_PCT = 56
-    const allMarkers: {
-      type: DutyMarker
-      eventId: string
-      event: DutyEvent
-      left: number
-      width: number
-      barTop: string
-      barTopPct: number
-      violated?: boolean
-      /** Display-only SDF (700.29) chips, not tied to a DutyEvent marker type list */
-      sdfProspective?: boolean
-      sdfReasons?: string[]
-      sdfRef?: ReturnType<typeof sdfsOnDay>[number]['sdf']
-    }[] = []
+  const sharedDayMinRem = scheduleLayout.sharedDayMinRem
 
-    dayEvents.forEach((event) => {
-      let barTop = BAR_TOP
-      let barTopPct = BAR_TOP_PCT
-      if (event.type === 'rest') {
-        const overlappingRest = dayEvents.find(
-          (e) =>
-            e.type === 'rest' &&
-            e.id !== event.id &&
-            eventsOverlap(e.start, e.end, event.start, event.end),
-        )
-        if (overlappingRest) {
-          const thisDuration = event.end.getTime() - event.start.getTime()
-          const otherDuration =
-            overlappingRest.end.getTime() - overlappingRest.start.getTime()
-          if (thisDuration > otherDuration) {
-            barTop = BAR_TOP_OVERLAP
-            barTopPct = BAR_TOP_OVERLAP_PCT
-          }
-        }
-      }
+  const eventsById = useMemo(() => {
+    const m = new Map<string, DutyEvent>()
+    for (const e of events) m.set(e.id, e)
+    return m
+  }, [events])
 
-      const isStart = event.start >= dayStart && event.start < dayEnd
-      const isEnd = event.end > dayStart && event.end <= dayEnd
-      const { left, width } = dayBarPosition(
-        event.start,
-        event.end,
-        dayStart,
-        dayEnd,
-      )
+  const dateByStartMs = useMemo(() => {
+    const m = new Map<number, Date>()
+    for (const d of days) m.set(dayStartInCal(d).getTime(), d)
+    return m
+  }, [days, calendarTZ])
 
-      // Classification uses acclimatized TZ; E on start day, L/N on end day only.
-      // Rest chips (RR/LNR/…) only on the preferred (widest) day of the bar.
-      const markers = getDutyMarkers(
-        event,
-        regulator,
-        acclTZ,
-        isStart,
-        isEnd,
-      )
-      const showRestChip =
-        event.type !== 'rest' ||
-        isPreferredMarkerDay(event.start, event.end, dayStart, dayEnd)
-      markers.forEach((marker) => {
-        if (event.type === 'rest' && !showRestChip) return
-        allMarkers.push({
-          type: marker,
-          eventId: event.id,
-          event,
-          left,
-          width,
-          barTop,
-          barTopPct,
-          violated: event.violated,
-        })
-      })
+  const handleDayClickMs = useCallback(
+    (dayStartMs: number) => {
+      const d = dateByStartMs.get(dayStartMs)
+      if (d) handleClick(d)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [dateByStartMs, showMenu, showAddDuty, isEdit, events, calendarTZ, selectedDate],
+  )
 
-      // Key includes day so multi-day events don't collide across cells
-      const barClass =
-        event.type === 'reserve'
-          ? 'reserve'
-          : event.type === 'standby'
-            ? 'standby'
-            : event.type === 'free'
-              ? 'free'
-              : event.type
-      // Square ends at midnight so multi-day bars look cut, not finished/restarted
-      const spanClass = [
-        !isStart ? 'event-bar--open-start' : '',
-        !isEnd ? 'event-bar--open-end' : '',
-      ]
-        .filter(Boolean)
-        .join(' ')
+  const handleDayPressStartMs = useCallback(
+    (dayStartMs: number) => {
+      const d = dateByStartMs.get(dayStartMs)
+      if (d) handleMouseDown(d)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [dateByStartMs],
+  )
 
-      allBars.push(
-        <div
-          key={`${event.id}-${dayStart.toISOString()}`}
-          className={`event-bar ${barClass}${spanClass ? ` ${spanClass}` : ''}${event.violated ? ' violated' : ''}`}
-          style={{ left: `${left}%`, width: `${width}%`, top: barTop }}
-          title={event.title}
-          onClick={(e) => {
-            e.stopPropagation()
-            if (event.type === 'free') {
-              openInfoSheet(
-                {
-                  badge: 'Free',
-                  title: event.title || 'Time free from duty',
-                  rule: 'Time free from duty: the member is not required to perform work for the operator, and the operator must not assign duty during this period. Free time is used to form local nights’ rests and single days free from duty under CAR 700.29.',
-                  reference: 'CAR 700.29; AC 700-047 §§4.31–4.32',
-                  whyApplies:
-                    event.ruleWhy ||
-                    `Scheduled free time from ${event.start.toLocaleString()} to ${event.end.toLocaleString()}.`,
-                  meta: [
-                    `Start · ${event.start.toLocaleString()}`,
-                    `End · ${event.end.toLocaleString()}`,
-                    event.freePurpose
-                      ? `Purpose · ${event.freePurpose}`
-                      : 'Purpose · manual',
-                  ],
-                  canDelete: true,
-                  eventId: event.id,
-                },
-                { kind: 'event', event },
-              )
-            } else if (
-              event.type === 'reserve' ||
-              event.type === 'standby'
-            ) {
-              const factor = event.workFactor ?? defaultWorkFactor(event.type)
-              openInfoSheet(
-                {
-                  badge: event.type === 'reserve' ? 'RSV' : 'SBY',
-                  title:
-                    event.type === 'reserve'
-                      ? 'Reserve availability'
-                      : 'Standby',
-                  rule:
-                    event.type === 'reserve'
-                      ? 'Time as a flight crew member on reserve (availability with notice of more than one hour) counts at 33% toward the maximum number of hours of work.'
-                      : 'Time as a flight crew member on standby (at a designated location, notice of one hour or less) counts at 100% toward hours of work.',
-                  reference: 'CAR 700.29(3); AC 700-047 §4.34',
-                  whyApplies: `${event.type === 'reserve' ? 'Reserve' : 'Standby'} from ${event.start.toLocaleString()} to ${event.end.toLocaleString()}. Work credit factor ${factor} (CAR 700.29(3)).`,
-                  meta: [
-                    `Start · ${event.start.toLocaleString()}`,
-                    `End · ${event.end.toLocaleString()}`,
-                    `Work factor · ${factor}`,
-                  ],
-                  canDelete: true,
-                  eventId: event.id,
-                },
-                { kind: 'event', event },
-              )
-            } else {
-              openInfoSheet(
-                explainEvent(event, regulator, acclTZ, homeBaseTZ),
-                { kind: 'event', event },
-              )
-            }
-          }}
-        />,
-      )
+  const handleDayPressEnd = useCallback(() => {
+    handleMouseUp()
+  }, [])
 
-    })
-
-    // Phantom 700.41 contours: may extend past the solid rest into later day
-    // cells (e.g. rest ends 16:00, LNR ends 07:30 next day). Draw on every day
-    // the phantom interval overlaps — not only days that host the solid rest.
-    {
-      const dutiesSorted = events
-        .filter((e) => e.type === 'duty')
-        .sort((a, b) => a.start.getTime() - b.start.getTime())
-      const rests = events.filter(
-        (e) => e.type === 'rest' && e.id.endsWith('-rest'),
-      )
-      for (const rest of rests) {
-        const dutyId = rest.id.slice(0, -'-rest'.length)
-        const dutyIdx = dutiesSorted.findIndex((d) => d.id === dutyId)
-        if (dutyIdx < 0) continue
-        const parentDuty = dutiesSorted[dutyIdx]
-        const nextDuty = dutiesSorted[dutyIdx + 1]
-        const phantom = phantomDisruptiveRestExtension(
-          parentDuty,
-          rest,
-          regulator,
-          acclTZ,
-          nextDuty,
-        )
-        if (!phantom || phantom.end.getTime() <= rest.end.getTime()) continue
-
-        const phantomStart = rest.end
-        const phantomEnd = phantom.end
-        // Skip days that do not intersect [phantomStart, phantomEnd)
-        if (
-          phantomEnd.getTime() <= dayStart.getTime() ||
-          phantomStart.getTime() >= dayEnd.getTime()
-        ) {
-          continue
-        }
-
-        const { left: pLeft, width: pWidth } = dayBarPosition(
-          phantomStart,
-          phantomEnd,
-          dayStart,
-          dayEnd,
-        )
-        if (pWidth <= 0.15) continue
-
-        // Segment roles: open join at solid end, continuous mid, terminal at LNR end
-        const fromSolid =
-          phantomStart.getTime() >= dayStart.getTime() &&
-          phantomStart.getTime() < dayEnd.getTime()
-        const toEnd =
-          phantomEnd.getTime() > dayStart.getTime() &&
-          phantomEnd.getTime() <= dayEnd.getTime()
-        const roleClass = [
-          fromSolid ? 'rest-phantom--from-solid' : '',
-          toEnd ? 'rest-phantom--to-end' : '',
-          !fromSolid && !toEnd ? 'rest-phantom--continue' : '',
-        ]
-          .filter(Boolean)
-          .join(' ')
-
-        // Center thinner contour on the solid rest track
-        let phantomTop = BAR_TOP
-        const solidOnDay = dayEvents.find((e) => e.id === rest.id)
-        if (solidOnDay) {
-          const overlappingRest = dayEvents.find(
-            (e) =>
-              e.type === 'rest' &&
-              e.id !== rest.id &&
-              eventsOverlap(e.start, e.end, rest.start, rest.end),
-          )
-          if (overlappingRest) {
-            const thisDuration = rest.end.getTime() - rest.start.getTime()
-            const otherDuration =
-              overlappingRest.end.getTime() - overlappingRest.start.getTime()
-            if (thisDuration > otherDuration) phantomTop = BAR_TOP_OVERLAP
-          }
-        }
-
-        // Tuck under solid end so the join has no visible start edge
-        const leftAdj = fromSolid ? `calc(${pLeft}% - 2px)` : `${pLeft}%`
-        const widthAdj = fromSolid
-          ? `calc(${pWidth}% + 2px)`
-          : `${pWidth}%`
-
-        allBars.push(
-          <div
-            key={`${rest.id}-phantom-70041-${dayStart.toISOString()}`}
-            className={`event-bar rest-phantom ${roleClass}`}
-            style={{
-              left: leftAdj,
-              width: widthAdj,
-              top: phantomTop,
-            }}
-            title={`Because this duty is ${phantom.thisDutyLabel}: if next is ${phantom.ifNextLabel} → LNR to ${phantomEnd.toLocaleString()} (CAR 700.41)`}
-            onClick={(e) => {
-              e.stopPropagation()
-              openInfoSheet(
-                infoSheetFromPhantomDisruptiveRest({
-                  solidRestEnd: rest.end,
-                  phantomEnd,
-                  thisDutyLabel: phantom.thisDutyLabel,
-                  ifNextLabel: phantom.ifNextLabel,
-                  reason: phantom.reason,
-                }),
-                { kind: 'generic' },
-              )
-            }}
-          />,
-        )
-      }
-    }
-
-    // SDF chips: one chip on the preferred (widest) day of the free span
-    sdfsOnDay(date).forEach((display, index) => {
-      const sdf = display.sdf
-      if (!isPreferredMarkerDay(sdf.start, sdf.end, dayStart, dayEnd)) return
-      const prospective = display.reasons.includes('prospective')
-      const { left, width } = dayBarPosition(
-        sdf.start,
-        sdf.end,
-        dayStart,
-        dayEnd,
-      )
-      allMarkers.push({
-        type: 'SDF',
-        eventId: `sdf-${sdf.start.toISOString()}-${index}`,
-        // Placeholder duty event is never used for SDF display chips
-        event: {
-          id: `sdf-display-${index}`,
-          title: 'SDF',
-          type: 'free',
-          start: sdf.start,
-          end: sdf.end,
-        },
-        left,
-        width,
-        barTop: BAR_TOP,
-        // Sit in the lower rest band under the default bar line
-        barTopPct: BAR_TOP_PCT,
-        sdfProspective: prospective,
-        sdfReasons: display.reasons,
-        sdfRef: sdf,
-      })
-    })
-
-    /*
-     * Chip size as % of day cell — approximate for collision math.
-     * Real chips use fluid em/vw CSS; these track typical 7-col cells.
-     * Bar height is pixel-based (clamp 6–10px) so use a generous cell-%
-     * for collision; actual render top uses CSS var(--event-bar-height).
-     */
-    const chipHPct = 13
-    /* Match visual chip footprint for collision math (not oversized right reserve) */
-    const chipWNarrowPct = 18
-    const chipWWidePct = 28
-    const barHPct = 10
-    /** Lateral inset for collision math (% of cell) — mirrors CSS --marker-gap */
-    const cellGapPct = 3
-    /** Symmetric bar↔chip clearance used in CSS and layout estimates */
-    const barChipGapPx = 4
-    // Keep chips below the day-number band (today pill ~1.35rem on short cells)
-    const minTopPct = 22
-    const maxBottomPct = 97
-    const edgeGapCss = 'var(--marker-gap, 6px)'
-
-    const layoutInputs: MarkerLayoutInput[] = allMarkers.map((marker, index) => {
-      const role = markerVerticalRole(marker.type)
-      const restMarker =
-        marker.type === 'LNR' ||
-        marker.type === 'LNR2' ||
-        marker.type === 'LNR3' ||
-        marker.type === 'RR' ||
-        marker.type === 'SDF'
-      const isWide =
-        marker.type === 'LNR2' ||
-        marker.type === 'LNR3' ||
-        marker.type === 'SDF' ||
-        (marker.violated && restMarker)
-      const widthPct = isWide ? chipWWidePct : chipWNarrowPct
-      const anchor = markerBarAnchor(marker.type)
-      const leftPct = preferredMarkerLeftPct(
-        marker.left,
-        marker.width,
-        widthPct,
-        anchor,
-        cellGapPct,
-      )
-      const preferredTopPct = preferredMarkerTopPct(
-        role,
-        marker.barTopPct,
-        barHPct,
-        chipHPct,
-        cellGapPct,
-        minTopPct,
-        maxBottomPct,
-      )
-      let barAttachXPct = marker.left + marker.width / 2
-      if (anchor === 'start') barAttachXPct = marker.left
-      else if (anchor === 'end') barAttachXPct = marker.left + marker.width
-
-      return {
-        id: `${marker.eventId}-${marker.type}-${index}`,
-        role,
-        preferredTopPct,
-        leftPct,
-        widthPct,
-        heightPct: chipHPct,
-        barTopPct: marker.barTopPct,
-        barHPct,
-        barAttachXPct,
-      }
-    })
-
-    const resolved = resolveMarkerOverlaps(layoutInputs, {
-      gapPct: 1.8,
-      minTopPct,
-      maxBottomPct,
-      leaderThresholdPct: 4,
-    })
-
-    const markerElements: ReactNode[] = []
-    allMarkers.forEach((marker, index) => {
-      const layoutId = `${marker.eventId}-${marker.type}-${index}`
-      const place = resolved.find((r) => r.id === layoutId)
-      const layoutIn = layoutInputs.find((l) => l.id === layoutId)
-      if (!place || !layoutIn) return
-
-      const restMarker =
-        marker.type === 'LNR' ||
-        marker.type === 'LNR2' ||
-        marker.type === 'LNR3' ||
-        marker.type === 'RR' ||
-        marker.type === 'SDF'
-      const isWide =
-        marker.type === 'LNR2' ||
-        marker.type === 'LNR3' ||
-        marker.type === 'SDF' ||
-        (marker.violated && restMarker)
-      const violatedClass = marker.violated && restMarker
-      const chipH = 'var(--marker-chip-height, 1.2em)'
-      const barTopCss = marker.barTop
-      const anchor = markerBarAnchor(marker.type)
-      // Stack offset from preferred (collision resolution), still in cell %
-      const stackDeltaPct = place.topPct - layoutIn.preferredTopPct
-      /*
-       * Preferred band uses real CSS bar height so below chips never sit on the
-       * bar; stackDelta only applies vertical separation between chips.
-       */
-      const top =
-        place.role === 'above'
-          ? `calc(${barTopCss} - ${chipH} - ${barChipGapPx}px + ${stackDeltaPct}%)`
-          : `calc(${barTopCss} + var(--event-bar-height) + ${barChipGapPx}px + ${stackDeltaPct}%)`
-
-      /*
-       * Lateral placement — same min gap on left and right edges.
-       * Preferred left depends on anchor; clamp uses real chip width vars so
-       * neither side reserves a large % “budget” (that made the right look
-       * more padded than the left).
-       */
-      const chipW = isWide
-        ? 'var(--marker-chip-width-wide, 2.4em)'
-        : 'var(--marker-chip-width, 1.55em)'
-      const maxWidthCss = `calc(100% - 2 * ${edgeGapCss})`
-      // Preferred left (top-left of chip) before edge clamp
-      let preferredLeft: string
-      if (anchor === 'end') {
-        const barRightPct = Math.min(100, marker.left + marker.width)
-        preferredLeft = `calc(${barRightPct}% - ${chipW})`
-      } else if (anchor === 'start') {
-        preferredLeft = `${marker.left}%`
-      } else {
-        preferredLeft = `${place.leftPct}%`
-      }
-      const leftStyle = `clamp(${edgeGapCss}, ${preferredLeft}, calc(100% - ${edgeGapCss} - ${chipW}))`
-      const horizStyle: CSSProperties = {
-        left: leftStyle,
-        right: 'auto',
-        maxWidth: maxWidthCss,
-        minWidth: 0,
-        width: 'max-content',
-      }
-
-      if (place.leader) {
-        const { x1, y1, y2 } = place.leader
-        const topY = Math.min(y1, y2)
-        const height = Math.abs(y2 - y1)
-        const leaderLeft = `clamp(${edgeGapCss}, ${x1}%, calc(100% - ${edgeGapCss}))`
-        if (height > 0.4) {
-          markerElements.push(
-            <div
-              key={`leader-${layoutId}`}
-              className="marker-leader"
-              style={{
-                left: leaderLeft,
-                top: `${topY}%`,
-                height: `${height}%`,
-              }}
-              aria-hidden
-            />,
-          )
-        }
-      }
-
-      // Display SDF (700.29) chips
-      if (marker.sdfRef) {
-        const prospective = !!marker.sdfProspective
-        markerElements.push(
-          <button
-            type="button"
-            key={layoutId}
-            className={`marker marker-anchored marker-button SDF${prospective ? ' SDF-prospective' : ''}`}
-            style={{ top, ...horizStyle }}
-            title={
-              prospective
-                ? 'Single day free from duty needed before further duty (CAR 700.29) — tap for details'
-                : 'Single day free from duty (CAR 700.29) — tap for details'
-            }
-            aria-label={
-              prospective
-                ? 'Single day free from duty needed. Tap for definition and why it applies.'
-                : 'Single day free from duty. Tap for definition and why it applies.'
-            }
-            onClick={(e) => {
-              e.stopPropagation()
-              openInfoSheet(infoSheetFromSdf(marker.sdfRef!, marker.sdfReasons), {
-                kind: 'sdf',
-                sdf: marker.sdfRef!,
-                reasons: marker.sdfReasons,
-              })
-            }}
-          >
-            {prospective ? 'SDF?' : markerChipLabel('SDF')}
-          </button>,
+  const handleBarClick = useCallback(
+    (bar: DayBarSpec, e: ReactMouseEvent) => {
+      e.stopPropagation()
+      if (bar.kind === 'phantom' && bar.phantom) {
+        const ph = bar.phantom
+        openInfoSheet(
+          infoSheetFromPhantomDisruptiveRest({
+            solidRestEnd: ph.solidRestEnd,
+            phantomEnd: ph.phantomEnd,
+            thisDutyLabel: ph.thisDutyLabel,
+            ifNextLabel: ph.ifNextLabel,
+            reason: ph.reason,
+          }),
+          { kind: 'generic' },
         )
         return
       }
+      const event = eventsById.get(bar.eventId)
+      if (!event) return
+      if (event.type === 'free') {
+        openInfoSheet(
+          {
+            badge: 'Free',
+            title: event.title || 'Time free from duty',
+            rule: 'Time free from duty: the member is not required to perform work for the operator, and the operator must not assign duty during this period. Free time is used to form local nights’ rests and single days free from duty under CAR 700.29.',
+            reference: 'CAR 700.29; AC 700-047 §§4.31–4.32',
+            whyApplies:
+              event.ruleWhy ||
+              `Scheduled free time from ${event.start.toLocaleString()} to ${event.end.toLocaleString()}.`,
+            meta: [
+              `Start · ${event.start.toLocaleString()}`,
+              `End · ${event.end.toLocaleString()}`,
+              event.freePurpose
+                ? `Purpose · ${event.freePurpose}`
+                : 'Purpose · manual',
+            ],
+            canDelete: true,
+            eventId: event.id,
+          },
+          { kind: 'event', event },
+        )
+      } else if (event.type === 'reserve' || event.type === 'standby') {
+        const factor = event.workFactor ?? defaultWorkFactor(event.type)
+        openInfoSheet(
+          {
+            badge: event.type === 'reserve' ? 'RSV' : 'SBY',
+            title:
+              event.type === 'reserve' ? 'Reserve availability' : 'Standby',
+            rule:
+              event.type === 'reserve'
+                ? 'Time as a flight crew member on reserve (availability with notice of more than one hour) counts at 33% toward the maximum number of hours of work.'
+                : 'Time as a flight crew member on standby (at a designated location, notice of one hour or less) counts at 100% toward hours of work.',
+            reference: 'CAR 700.29(3); AC 700-047 §4.34',
+            whyApplies: `${event.type === 'reserve' ? 'Reserve' : 'Standby'} from ${event.start.toLocaleString()} to ${event.end.toLocaleString()}. Work credit factor ${factor} (CAR 700.29(3)).`,
+            meta: [
+              `Start · ${event.start.toLocaleString()}`,
+              `End · ${event.end.toLocaleString()}`,
+              `Work factor · ${factor}`,
+            ],
+            canDelete: true,
+            eventId: event.id,
+          },
+          { kind: 'event', event },
+        )
+      } else {
+        openInfoSheet(explainEvent(event, regulator, acclTZ, homeBaseTZ), {
+          kind: 'event',
+          event,
+        })
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [eventsById, regulator, acclTZ, homeBaseTZ, events, timeFreeOption, report70029],
+  )
 
-      const label = markerChipLabel(marker.type, marker.violated)
-      const explanation = explainMarker(
-        marker.type,
-        marker.event,
-        regulator,
-        acclTZ,
-        homeBaseTZ,
+  const handleMarkerClick = useCallback(
+    (marker: DayMarkerSpec, e: ReactMouseEvent) => {
+      e.stopPropagation()
+      if (marker.sheet === 'sdf' && marker.sdfStartMs != null) {
+        const display = report70029.displaySdfs.find(
+          (d) => d.sdf.start.getTime() === marker.sdfStartMs,
+        )
+        if (display) {
+          openInfoSheet(infoSheetFromSdf(display.sdf, display.reasons), {
+            kind: 'sdf',
+            sdf: display.sdf,
+            reasons: display.reasons,
+          })
+        }
+        return
+      }
+      const event = eventsById.get(marker.eventId)
+      if (!event) return
+      if (marker.sheet === 'rest' || event.type === 'rest') {
+        openInfoSheet(explainEvent(event, regulator, acclTZ, homeBaseTZ), {
+          kind: 'event',
+          event,
+          marker: marker.type,
+        })
+      } else {
+        const explanation = explainMarker(
+          marker.type,
+          event,
+          regulator,
+          acclTZ,
+          homeBaseTZ,
+        )
+        openInfoSheet(infoSheetFromMarker(explanation), {
+          kind: 'event',
+          event,
+          marker: marker.type,
+        })
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [eventsById, regulator, acclTZ, homeBaseTZ, report70029.displaySdfs, events, timeFreeOption],
+  )
+
+  const handleViolationClick = useCallback(
+    (dayStartMs: number, e: ReactMouseEvent) => {
+      e.stopPropagation()
+      const dayStart = new Date(dayStartMs)
+      const dayEnd = addCivilDaysInTimeZone(dayStart, calendarTZ, 1)
+      const v700 = report70029.violations.find(
+        (v) => v.windowEnd >= dayStart && v.windowEnd < dayEnd,
       )
-
-      markerElements.push(
-        <button
-          type="button"
-          key={layoutId}
-          className={`marker marker-anchored marker-button ${marker.type}${violatedClass ? ' LNR-violated' : ''}`}
-          style={{
-            top,
-            ...horizStyle,
-          }}
-          title={`${explanation.label} — tap for definition`}
-          aria-label={`${explanation.label}. Tap for definition and why it applies.`}
-          onClick={(e) => {
-            e.stopPropagation()
-            // Rest marker and rest bar share the same event sheet.
-            // Duty classification chips keep marker-specific rule text.
-            if (marker.event.type === 'rest') {
-              openInfoSheet(
-                explainEvent(marker.event, regulator, acclTZ, homeBaseTZ),
-                { kind: 'event', event: marker.event, marker: marker.type },
-              )
-            } else {
-              openInfoSheet(infoSheetFromMarker(explanation), {
-                kind: 'event',
-                event: marker.event,
-                marker: marker.type,
-              })
-            }
-          }}
-        >
-          {label}
-        </button>,
-      )
-    })
-
-    return [...allBars, ...markerElements]
-  }
+      if (v700) {
+        openInfoSheet(infoSheetFrom70029Violation(v700), {
+          kind: 'violation',
+          violation: v700,
+        })
+        return
+      }
+      const dayDate = dateByStartMs.get(dayStartMs) ?? dayStart
+      const dayEvents = eventsOnLocalDay(events, dayDate, calendarTZ)
+      const lnrMsg = summarizeViolatedLnrs(dayEvents)
+      if (lnrMsg) alert(lnrMsg)
+      else
+        alert(
+          'Violation: duty period overlaps a rest period, or rest requirements are not met.',
+        )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [calendarTZ, report70029.violations, events, dateByStartMs],
+  )
 
   const getDayActions = (date: Date) => {
     const duties = findDutiesOnDate(events, date)
@@ -1447,202 +1086,6 @@ function Calendar() {
     resetDutyForm()
   }
 
-  const days = useMemo(
-    () => getCalendarDays(currentDate),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- getCalendarDays closes over calendarTZ
-    [currentDate, calendarTZ],
-  )
-
-  /**
-   * Content height needed for one day (rem) from bars + resolved marker tiers.
-   * Used only to size the whole grid uniformly — not per-cell heights.
-   */
-  const computeDayContentMinRem = (date: Date): number => {
-    const dayStart = dayStartInCal(date)
-    const dayEnd = dayEndInCal(date)
-    const dayEvents = eventsOnLocalDay(events, date, calendarTZ)
-    const BAR_TOP_PCT = 46
-    const BAR_TOP_OVERLAP_PCT = 56
-
-    type MarkerStub = {
-      type: DutyMarker
-      eventId: string
-      left: number
-      width: number
-      barTopPct: number
-      violated?: boolean
-    }
-    const stubs: MarkerStub[] = []
-    let hasBar = dayEvents.length > 0
-
-    dayEvents.forEach((event) => {
-      let barTopPct = BAR_TOP_PCT
-      if (event.type === 'rest') {
-        const overlappingRest = dayEvents.find(
-          (e) =>
-            e.type === 'rest' &&
-            e.id !== event.id &&
-            eventsOverlap(e.start, e.end, event.start, event.end),
-        )
-        if (overlappingRest) {
-          const thisDuration = event.end.getTime() - event.start.getTime()
-          const otherDuration =
-            overlappingRest.end.getTime() - overlappingRest.start.getTime()
-          if (thisDuration > otherDuration) barTopPct = BAR_TOP_OVERLAP_PCT
-        }
-      }
-      const isStart = event.start >= dayStart && event.start < dayEnd
-      const isEnd = event.end > dayStart && event.end <= dayEnd
-      const { left, width } = dayBarPosition(
-        event.start,
-        event.end,
-        dayStart,
-        dayEnd,
-      )
-      const showRestChip =
-        event.type !== 'rest' ||
-        isPreferredMarkerDay(event.start, event.end, dayStart, dayEnd)
-      getDutyMarkers(event, regulator, acclTZ, isStart, isEnd).forEach(
-        (marker) => {
-          if (event.type === 'rest' && !showRestChip) return
-          stubs.push({
-            type: marker,
-            eventId: event.id,
-            left,
-            width,
-            barTopPct,
-            violated: event.violated,
-          })
-        },
-      )
-    })
-
-    // Phantom contours count as bar presence on days they cover
-    {
-      const dutiesSorted = events
-        .filter((e) => e.type === 'duty')
-        .sort((a, b) => a.start.getTime() - b.start.getTime())
-      const rests = events.filter(
-        (e) => e.type === 'rest' && e.id.endsWith('-rest'),
-      )
-      for (const rest of rests) {
-        const dutyId = rest.id.slice(0, -'-rest'.length)
-        const dutyIdx = dutiesSorted.findIndex((d) => d.id === dutyId)
-        if (dutyIdx < 0) continue
-        const phantom = phantomDisruptiveRestExtension(
-          dutiesSorted[dutyIdx],
-          rest,
-          regulator,
-          acclTZ,
-          dutiesSorted[dutyIdx + 1],
-        )
-        if (!phantom || phantom.end.getTime() <= rest.end.getTime()) continue
-        const phantomStart = rest.end
-        if (
-          phantom.end.getTime() > dayStart.getTime() &&
-          phantomStart.getTime() < dayEnd.getTime()
-        ) {
-          hasBar = true
-        }
-      }
-    }
-
-    sdfsOnDay(date).forEach((display, index) => {
-      const sdf = display.sdf
-      if (!isPreferredMarkerDay(sdf.start, sdf.end, dayStart, dayEnd)) return
-      const { left, width } = dayBarPosition(
-        sdf.start,
-        sdf.end,
-        dayStart,
-        dayEnd,
-      )
-      stubs.push({
-        type: 'SDF',
-        eventId: `sdf-${sdf.start.toISOString()}-${index}`,
-        left,
-        width,
-        barTopPct: BAR_TOP_PCT,
-      })
-    })
-
-    const chipHPct = 13
-    const chipWNarrowPct = 18
-    const chipWWidePct = 30
-    const barHPct = 10
-    const cellGapPct = 3
-    const minTopPct = 22
-    const maxBottomPct = 97
-
-    const layoutInputs: MarkerLayoutInput[] = stubs.map((marker, index) => {
-      const role = markerVerticalRole(marker.type)
-      const restMarker =
-        marker.type === 'LNR' ||
-        marker.type === 'LNR2' ||
-        marker.type === 'LNR3' ||
-        marker.type === 'RR' ||
-        marker.type === 'SDF'
-      const isWide =
-        marker.type === 'LNR2' ||
-        marker.type === 'LNR3' ||
-        marker.type === 'SDF' ||
-        (marker.violated && restMarker)
-      const widthPct = isWide ? chipWWidePct : chipWNarrowPct
-      const anchor = markerBarAnchor(marker.type)
-      const leftPct = preferredMarkerLeftPct(
-        marker.left,
-        marker.width,
-        widthPct,
-        anchor,
-        cellGapPct,
-      )
-      const preferredTopPct = preferredMarkerTopPct(
-        role,
-        marker.barTopPct,
-        barHPct,
-        chipHPct,
-        cellGapPct,
-        minTopPct,
-        maxBottomPct,
-      )
-      let barAttachXPct = marker.left + marker.width / 2
-      if (anchor === 'start') barAttachXPct = marker.left
-      else if (anchor === 'end') barAttachXPct = marker.left + marker.width
-      return {
-        id: `${marker.eventId}-${marker.type}-${index}`,
-        role,
-        preferredTopPct,
-        leftPct,
-        widthPct,
-        heightPct: chipHPct,
-        barTopPct: marker.barTopPct,
-        barHPct,
-        barAttachXPct,
-      }
-    })
-
-    const resolved = resolveMarkerOverlaps(layoutInputs, {
-      gapPct: 1.8,
-      minTopPct,
-      maxBottomPct,
-      leaderThresholdPct: 4,
-    })
-
-    return dayContentMinRem({
-      hasBar: hasBar || stubs.length > 0,
-      aboveTiers: markerBandTiers(resolved, 'above'),
-      belowTiers: markerBandTiers(resolved, 'below'),
-    })
-  }
-
-  /** One height for every day cell = densest content need in the month grid. */
-  const sharedDayMinRem = useMemo(() => {
-    let maxRem = 2.75
-    for (const d of days) {
-      maxRem = Math.max(maxRem, computeDayContentMinRem(d))
-    }
-    return Math.min(6.25, maxRem)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- pure layout from events/month
-  }, [days, events, regulator, acclTZ, report70029.displaySdfs, calendarTZ])
 
   const isInRange = (date: Date) => {
     if (!showAddDuty || !addDutyDate) return false
@@ -1767,122 +1210,29 @@ function Calendar() {
                 </div>
               ))}
               {days.map((date: Date) => {
-                const dayParts = getZonedTimeParts(date, calendarTZ)
-                const viewParts = getZonedTimeParts(currentDate, calendarTZ)
+                const dayKey = toDateInputValueInTZ(date, calendarTZ)
+                const layout = scheduleLayout.byKey.get(dayKey)
+                if (!layout) return null
+                const dayStartMs = layout.dayStartMs
                 const isToday =
-                  dayStartInCal(date).getTime() ===
-                  dayStartInCal(new Date()).getTime()
-                const dayStart = dayStartInCal(date)
-                const dayEvents = eventsOnLocalDay(events, date, calendarTZ)
-                let violationLeft = 0
-                const violatedDuty = dayEvents.find(
-                  (e) => e.violated && e.type === 'duty',
-                )
-                let violatedLNR: DutyEvent | null | undefined = null
-                if (!violatedDuty) {
-                  violatedLNR = dayEvents.find(
-                    (e) =>
-                      e.violated && e.type === 'rest' && e.isLocalNightRest,
-                  )
-                }
-                if (violatedDuty) {
-                  const overlappingRest = dayEvents.find(
-                    (e) =>
-                      e.type === 'rest' &&
-                      eventsOverlap(
-                        violatedDuty.start,
-                        violatedDuty.end,
-                        e.start,
-                        e.end,
-                      ),
-                  )
-                  if (overlappingRest) {
-                    const overlapStart = new Date(
-                      Math.max(
-                        violatedDuty.start.getTime(),
-                        overlappingRest.start.getTime(),
-                      ),
-                    )
-                    const overlapHour =
-                      (overlapStart.getTime() - dayStart.getTime()) /
-                      (1000 * 60 * 60)
-                    violationLeft = (overlapHour / 24) * 100
-                  }
-                } else if (violatedLNR) {
-                  const overlappingDuty = dayEvents.find(
-                    (e) =>
-                      e.type === 'duty' &&
-                      eventsOverlap(
-                        violatedLNR!.start,
-                        violatedLNR!.end,
-                        e.start,
-                        e.end,
-                      ),
-                  )
-                  if (overlappingDuty) {
-                    const overlapStart = new Date(
-                      Math.max(
-                        violatedLNR.start.getTime(),
-                        overlappingDuty.start.getTime(),
-                      ),
-                    )
-                    const overlapHour =
-                      (overlapStart.getTime() - dayStart.getTime()) /
-                      (1000 * 60 * 60)
-                    violationLeft = (overlapHour / 24) * 100
-                  }
-                }
+                  dayStartMs === dayStartInCal(new Date()).getTime()
+                const isSelected =
+                  !!selectedDate &&
+                  dayStartInCal(selectedDate).getTime() === dayStartMs
                 return (
-                  <div
-                    key={date.toISOString()}
-                    className={`day ${getDayStatus(date)} ${dayParts.month !== viewParts.month || dayParts.year !== viewParts.year ? 'other-month' : ''} ${selectedDate && dayStartInCal(selectedDate).getTime() === dayStart.getTime() ? 'selected' : ''} ${isInRange(date) ? 'in-range' : ''} ${isToday ? 'today' : ''}`}
-                    onMouseDown={() => handleMouseDown(date)}
-                    onMouseUp={handleMouseUp}
-                    onMouseLeave={handleMouseUp}
-                    onTouchStart={() => handleMouseDown(date)}
-                    onTouchEnd={handleMouseUp}
-                    onClick={() => handleClick(date)}
-                  >
-                    <span className="day-number">{dayParts.day}</span>
-                    {renderEventBars(date)}
-                    {(dayEvents.some((e) => e.violated) ||
-                      report70029.violations.some((v) => {
-                        const ds = dayStartInCal(date)
-                        const de = dayEndInCal(date)
-                        return v.windowEnd >= ds && v.windowEnd < de
-                      })) && (
-                      <div
-                        className="violation-icon"
-                        style={{ left: `${violationLeft}%`, bottom: '2px' }}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          const dayStart = dayStartInCal(date)
-                          const dayEnd = dayEndInCal(date)
-                          const v700 = report70029.violations.find(
-                            (v) =>
-                              v.windowEnd >= dayStart && v.windowEnd < dayEnd,
-                          )
-                          if (v700) {
-                            openInfoSheet(
-                              infoSheetFrom70029Violation(v700),
-                              { kind: 'violation', violation: v700 },
-                            )
-                            return
-                          }
-                          const lnrMsg = summarizeViolatedLnrs(dayEvents)
-                          if (lnrMsg) {
-                            alert(lnrMsg)
-                          } else {
-                            alert(
-                              'Violation: duty period overlaps a rest period, or rest requirements are not met.',
-                            )
-                          }
-                        }}
-                      >
-                        ⚠️
-                      </div>
-                    )}
-                  </div>
+                  <CalendarDayCell
+                    key={dayKey}
+                    layout={layout}
+                    isSelected={isSelected}
+                    isToday={isToday}
+                    isInRange={isInRange(date)}
+                    onDayClick={handleDayClickMs}
+                    onDayPressStart={handleDayPressStartMs}
+                    onDayPressEnd={handleDayPressEnd}
+                    onBarClick={handleBarClick}
+                    onMarkerClick={handleMarkerClick}
+                    onViolationClick={handleViolationClick}
+                  />
                 )
               })}
             </div>
