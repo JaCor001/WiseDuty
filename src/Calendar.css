@@ -63,11 +63,28 @@
 
 .month-header {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
+  gap: 0.2rem;
   margin-bottom: 0.45rem;
   flex-shrink: 0;
+}
+
+.calendar-tz-badge {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--primary-color) 8%, var(--card-bg));
+  border: 1px solid color-mix(in srgb, var(--primary-color) 22%, var(--border-color));
+  border-radius: var(--radius-pill, 999px);
+  padding: 0.15rem 0.65rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav-prev,
@@ -76,7 +93,7 @@
   color: var(--text-secondary);
   border: 1px solid var(--border-color);
   padding: 0.3rem 0.5rem;
-  border-radius: var(--radius-sm, 8px);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
   font-size: 1rem;
@@ -117,7 +134,7 @@
   color: var(--text-color);
   text-decoration: none;
   padding: 0.35rem 0.65rem;
-  border-radius: var(--radius-sm, 8px);
+  border-radius: var(--radius-sm);
   font-weight: 500;
   font-size: 0.9rem;
 }
@@ -163,16 +180,22 @@
   transform: none !important;
 }
 
+/*
+ * Calendar body: top-align a compact grid. On short viewports, this region
+ * scrolls so header / month nav stay put while cells keep a readable min height.
+ */
 .calendar-container {
+  position: relative;
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   justify-content: center;
   width: 100%;
   flex: 1 1 auto;
   min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
-
-
 
 .nav-prev:hover, .nav-next:hover {
   color: var(--accent-color);
@@ -181,16 +204,39 @@
 }
 
 .calendar-grid {
+  /*
+   * --day-min-h is set by JS to max(content need) across the month so every
+   * cell is the same size; default is a low floor (date number only).
+   * max → stops tall screens from stretching cells floor-to-ceiling.
+   * Below shared min, .calendar-container scrolls instead of crushing content.
+   */
+  --day-min-h: 2.75rem;
+  --day-max-h: 6.25rem;
+  --day-grid-gap: 0.3rem;
+  --day-header-h: 1.75rem;
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  /* 1 row for weekday labels + up to 6 week rows */
-  grid-template-rows: auto repeat(6, minmax(0, 1fr));
-  gap: 0.3rem;
+  grid-template-rows: auto repeat(6, minmax(var(--day-min-h), 1fr));
+  gap: var(--day-grid-gap);
   width: 100%;
-  height: 100%;
-  margin: 0 auto;
   max-width: 100%;
-  min-height: 0;
+  margin: 0 auto;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  /*
+   * height: prefer available space, but never taller than compact ideal.
+   * min-height: readable floor so short phones expand scrollHeight instead of
+   * crushing cells below --day-min-h.
+   */
+  height: min(
+    100%,
+    calc(
+      var(--day-header-h) + 6 * var(--day-max-h) + 6 * var(--day-grid-gap)
+    )
+  );
+  min-height: calc(
+    var(--day-header-h) + 6 * var(--day-min-h) + 6 * var(--day-grid-gap)
+  );
 }
 
 .day-header {
@@ -199,17 +245,19 @@
   font-size: 0.72rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  padding: 0.35rem 0.15rem;
+  padding: 0.3rem 0.15rem;
   background: var(--bg-secondary);
-  border-radius: var(--radius-sm, 8px);
+  border-radius: var(--radius-sm);
   border: 1px solid transparent;
   color: var(--text-secondary);
   width: 100%;
   box-sizing: border-box;
+  min-height: 0;
 }
 
 .day {
-  min-height: 0;
+  /* Shared with all cells via --day-min-h (uniform grid) */
+  min-height: var(--day-min-h, 2.75rem);
   height: 100%;
   aspect-ratio: auto;
   display: flex;
@@ -218,20 +266,30 @@
   justify-content: flex-start;
   padding: 0;
   /*
-   * Concentric marker geometry (nested rounded rect):
-   *   gap clears the outer corner curve on every edge
-   *   r_marker = r_cell − gap  (clamped so chips stay readable)
+   * Marker inset geometry (spacing only — radius uses design tokens).
+   * Day / marker / control corners: --radius-sm
+   * Thin event bars: --radius-xs
    */
-  --day-radius: var(--radius-sm, 8px);
+  --day-radius: var(--radius-sm);
   --marker-gap: max(6px, calc(var(--day-radius) * 0.75));
-  --marker-radius: max(2px, calc(var(--day-radius) - var(--marker-gap)));
-  /* Real chip footprint (letter + padding) — used to keep full chip inside gap */
-  --marker-chip-width: 1.55em;
-  --marker-chip-height: 1.2em;
+  /*
+   * Event bar sits lower so E/L/N (FDP day types) fit above it;
+   * rest markers (LNR/RR/SDF) stay below.
+   */
+  --event-bar-top: 46%;
+  --event-bar-top-overlap: 56%;
+  --event-bar-height: clamp(6px, 1.1vh, 10px);
+  /* Fluid chip footprint — scales with viewport, stays readable */
+  --marker-font-size: clamp(0.5rem, 1.55vw, 0.65rem);
+  --marker-chip-width: clamp(1.15em, 3.1vw, 1.55em);
+  --marker-chip-width-wide: clamp(1.85em, 5vw, 2.55em);
+  --marker-chip-height: clamp(1em, 2.15vw, 1.25em);
   /* Back-compat aliases used in older clamp strings */
   --marker-cell-inset: var(--marker-gap);
   --marker-min-width: var(--marker-chip-width);
-  border-radius: var(--day-radius);
+  border-radius: var(--radius-sm);
+  container-type: inline-size;
+  container-name: day-cell;
   cursor: pointer;
   position: relative;
   transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
@@ -252,10 +310,10 @@
 
 .day-number {
   font-weight: 600;
-  font-size: clamp(0.72rem, 1.4vh, 0.9rem);
-  margin-bottom: 0.1rem;
+  font-size: clamp(0.7rem, 1.2vh, 0.85rem);
+  margin-bottom: 0;
   color: var(--text-color);
-  padding: 0.25rem 0.35rem 0.1rem;
+  padding: 0.2rem 0.3rem 0.05rem;
 }
 
 .day.today .day-number {
@@ -263,7 +321,7 @@
   font-weight: 700;
   color: var(--primary-contrast, #fff);
   background: var(--primary-color);
-  border-radius: var(--radius-pill, 999px);
+  border-radius: var(--radius-pill);
   min-width: 1.35rem;
   height: 1.35rem;
   display: inline-flex;
@@ -303,7 +361,7 @@
 
 .violation-icon {
   position: absolute;
-  top: calc(30% + 12px + 2px);
+  top: calc(var(--event-bar-top, 46%) + var(--event-bar-height, 10px) + 2px);
   font-size: 0.9rem;
   cursor: pointer;
   color: var(--day-red-color);
@@ -322,13 +380,27 @@
 
 .event-bar {
   position: absolute;
-  top: 28%;
-  height: clamp(6px, 1.1vh, 10px);
-  border-radius: 3px;
+  top: var(--event-bar-top, 46%);
+  height: var(--event-bar-height, clamp(6px, 1.1vh, 10px));
+  border-radius: var(--radius-xs);
   background: var(--primary-color);
   box-shadow: none;
   cursor: pointer;
   transition: opacity 0.15s ease;
+}
+
+/*
+ * Multi-day continuity: square the side that crosses a midnight boundary so
+ * adjacent day cells read as one bar cleanly cut in two (same idea as phantom).
+ */
+.event-bar--open-start {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.event-bar--open-end {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .event-bar:hover {
@@ -358,7 +430,7 @@
     transparent
   );
   /* Match .event-bar solid rest height */
-  height: clamp(6px, 1.1vh, 10px);
+  height: var(--event-bar-height, clamp(6px, 1.1vh, 10px));
   margin-top: 0;
   background: transparent;
   border: none;
@@ -389,15 +461,15 @@
 /* Soft terminal at earliest LNR end */
 .event-bar.rest-phantom--to-end {
   border-right: 1.5px solid var(--phantom-stroke);
-  border-top-right-radius: 3px;
-  border-bottom-right-radius: 3px;
+  border-top-right-radius: var(--radius-xs);
+  border-bottom-right-radius: var(--radius-xs);
 }
 
 /* Same-day stub: open left + closed right */
 .event-bar.rest-phantom--from-solid.rest-phantom--to-end {
   border-left: none;
   border-right: 1.5px solid var(--phantom-stroke);
-  border-radius: 0 3px 3px 0;
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
 }
 
 .event-bar.rest-phantom:hover {
@@ -439,21 +511,21 @@ body.dark .event-bar.rest-phantom {
   color: var(--text-secondary);
   background: var(--card-bg);
   padding: 0.1rem 0.2rem;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border-color);
 }
 
 .marker {
   position: absolute;
-  font-size: 0.65rem;
+  font-size: var(--marker-font-size, 0.65rem);
   font-weight: 700;
   letter-spacing: 0.02em;
   line-height: 1;
   color: var(--text-secondary);
   background: var(--card-bg);
-  padding: 0.15rem 0.34rem;
-  /* Nested radius: r_cell − gap (concentric with day cell) */
-  border-radius: var(--marker-radius, 2px);
+  padding: 0.12em 0.32em;
+  /* Same family as day cells / controls */
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border-color);
   display: inline-flex;
   align-items: center;
@@ -461,83 +533,82 @@ body.dark .event-bar.rest-phantom {
   pointer-events: none;
   z-index: 2;
   white-space: nowrap;
-  /* Full chip must stay inside the concentric safe area */
+  /* Never wider than the cell’s lateral safe inset */
   max-width: calc(100% - 2 * var(--marker-gap, 6px));
-  min-width: var(--marker-chip-width, 1.55em);
+  /* Prefer readable chip size, but shrink before overflowing the cell */
+  min-width: 0;
+  width: max-content;
   min-height: var(--marker-chip-height, 1.2em);
   text-align: center;
   box-sizing: border-box;
+  /* Horizontal inset is applied via left/right in JS (end chips use right) */
+  padding-left: 0.32em;
+  padding-right: 0.32em;
 }
 
-/* Anchored under duty bar; left/top are always the chip’s top-left corner */
+/* Thin connector when a chip is stacked away from its event bar */
+.marker-leader {
+  position: absolute;
+  width: 1px;
+  pointer-events: none;
+  z-index: 1;
+  background: color-mix(in srgb, var(--text-secondary) 45%, transparent);
+  border-radius: 0;
+  opacity: 0.85;
+}
+
+body.dark .marker-leader {
+  background: color-mix(in srgb, var(--text-secondary) 55%, transparent);
+}
+
+/* Anchored to duty bar; left and/or right set in JS for edge-safe inset */
 .marker.marker-anchored {
   bottom: auto;
-  right: auto;
   transform: none;
 }
 
-.marker.E {
+/*
+ * Marker color families (consistent):
+ *   E / L / N  → duty classification (current E blue)
+ *   LNR / RR / SDF / multi-LNR → rest periods (current LNR purple)
+ */
+.marker.E,
+.marker.L,
+.marker.N {
   color: color-mix(in srgb, var(--day-blue-color, #2563eb) 85%, var(--text-color));
   border-color: color-mix(in srgb, var(--day-blue-color, #2563eb) 35%, var(--border-color));
 }
 
-.marker.L {
-  color: color-mix(in srgb, #c2410c 80%, var(--text-color));
-  border-color: color-mix(in srgb, #c2410c 30%, var(--border-color));
-}
-
-.marker.N {
-  color: color-mix(in srgb, #4f46e5 85%, var(--text-color));
-  border-color: color-mix(in srgb, #4f46e5 35%, var(--border-color));
-}
-
-.marker.LNR {
+.marker.LNR,
+.marker.LNR2,
+.marker.LNR3,
+.marker.RR,
+.marker.SDF {
   color: color-mix(in srgb, var(--day-rest-color, #7e22ce) 85%, var(--text-color));
   border-color: color-mix(in srgb, var(--day-rest-color, #7e22ce) 35%, var(--border-color));
+  background: var(--card-bg);
 }
 
 .marker.LNR2,
-.marker.LNR3 {
-  color: color-mix(in srgb, var(--day-rest-color, #7e22ce) 85%, var(--text-color));
-  border-color: color-mix(in srgb, var(--day-rest-color, #7e22ce) 35%, var(--border-color));
-  font-size: 0.58rem;
-}
-
-.marker.RR {
-  color: color-mix(in srgb, #0f766e 85%, var(--text-color));
-  border-color: color-mix(in srgb, #0f766e 35%, var(--border-color));
-}
-
+.marker.LNR3,
 .marker.SDF {
-  color: color-mix(in srgb, #047857 88%, var(--text-color));
-  border-color: color-mix(in srgb, #047857 35%, var(--border-color));
-  background: color-mix(in srgb, #d1fae5 55%, var(--card-bg));
-  font-size: 0.58rem;
+  font-size: max(0.48rem, calc(var(--marker-font-size, 0.65rem) * 0.9));
 }
 
-/* Planned free day after a work block — not yet taken */
+/* Planned free day — same rest palette, dashed to show “not yet taken” */
 .marker.SDF.SDF-prospective {
-  color: color-mix(in srgb, #b45309 90%, var(--text-color));
-  border-color: color-mix(in srgb, #d97706 45%, var(--border-color));
+  color: color-mix(in srgb, var(--day-rest-color, #7e22ce) 85%, var(--text-color));
+  border-color: color-mix(in srgb, var(--day-rest-color, #7e22ce) 45%, var(--border-color));
   border-style: dashed;
-  background: color-mix(in srgb, #fef3c7 60%, var(--card-bg));
+  background: color-mix(in srgb, var(--day-rest-color, #7e22ce) 10%, var(--card-bg));
 }
 
-body.dark .marker.SDF {
-  background: color-mix(in srgb, #064e3b 40%, var(--card-bg));
-}
-
-body.dark .marker.SDF.SDF-prospective {
-  color: color-mix(in srgb, #fbbf24 85%, var(--text-color));
-  border-color: color-mix(in srgb, #d97706 50%, var(--border-color));
-  background: color-mix(in srgb, #78350f 35%, var(--card-bg));
-}
-
-/* Rest requirement not met */
+/* Rest requirement not met (all rest-family chips) */
 .marker.LNR.LNR-violated,
 .marker.LNR2.LNR-violated,
 .marker.LNR3.LNR-violated,
-.marker.RR.LNR-violated {
+.marker.RR.LNR-violated,
+.marker.SDF.LNR-violated {
   color: color-mix(in srgb, #b91c1c 88%, var(--text-color));
   border-color: color-mix(in srgb, #b91c1c 45%, var(--border-color));
   background: color-mix(in srgb, #fef2f2 92%, var(--card-bg));
@@ -547,7 +618,8 @@ body.dark .marker.SDF.SDF-prospective {
 body.dark .marker.LNR.LNR-violated,
 body.dark .marker.LNR2.LNR-violated,
 body.dark .marker.LNR3.LNR-violated,
-body.dark .marker.RR.LNR-violated {
+body.dark .marker.RR.LNR-violated,
+body.dark .marker.SDF.LNR-violated {
   background: color-mix(in srgb, #7f1d1d 35%, var(--card-bg));
 }
 
@@ -601,7 +673,7 @@ button.marker.marker-button:focus-visible {
   background: var(--card-bg, #fff);
   color: var(--text-color);
   border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
-  border-radius: 18px;
+  border-radius: var(--radius-lg);
   box-shadow:
     0 24px 48px color-mix(in srgb, #0f172a 22%, transparent),
     0 0 0 1px color-mix(in srgb, #fff 6%, transparent);
@@ -662,7 +734,7 @@ button.marker.marker-button:focus-visible {
   min-width: 2.35rem;
   height: 2.35rem;
   padding: 0 0.45rem;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.03em;
@@ -695,7 +767,7 @@ button.marker.marker-button:focus-visible {
   display: inline-block;
   margin-top: 0.3rem;
   padding: 0.12rem 0.45rem;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -715,7 +787,7 @@ button.marker.marker-button:focus-visible {
   margin: 0;
   padding: 0;
   border: 1px solid var(--border-color);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--card-bg) 90%, var(--text-color));
   color: var(--text-secondary, #64748b);
   cursor: pointer;
@@ -761,7 +833,7 @@ button.marker.marker-button:focus-visible {
 .info-sheet-section {
   margin: 0;
   padding: 0.85rem 0.9rem;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--text-color) 2.8%, var(--card-bg));
   border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
 }
@@ -784,7 +856,7 @@ button.marker.marker-button:focus-visible {
   justify-content: center;
   width: 1.2rem;
   height: 1.2rem;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 0.65rem;
   font-weight: 800;
   color: color-mix(in srgb, var(--primary-color, #2563eb) 95%, #fff);
@@ -815,7 +887,7 @@ button.marker.marker-button:focus-visible {
   margin-left: auto;
   appearance: none;
   border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 0.2rem 0.55rem;
   font-size: 0.68rem;
   font-weight: 700;
@@ -842,7 +914,7 @@ button.marker.marker-button:focus-visible {
   max-height: min(42vh, 320px);
   overflow: auto;
   padding: 0.65rem 0.7rem;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--border-color) 75%, transparent);
   background: color-mix(in srgb, #0f172a 6%, var(--card-bg));
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -881,7 +953,7 @@ body.dark .info-sheet-debug {
 .info-sheet-btn {
   appearance: none;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   padding: 0.5rem 0.95rem;
   font-size: 0.88rem;
   font-weight: 650;
@@ -1019,7 +1091,7 @@ body.dark .long-duty-warning {
   margin-bottom: 0.2rem;
   padding: 0.7rem 0.85rem 0.8rem;
   background: var(--card-bg);
-  border-radius: var(--radius-md, 12px);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm, none);
   text-align: left;
   border: 1px solid var(--border-color);
@@ -1060,7 +1132,7 @@ body.dark .long-duty-warning {
   min-width: 1.85rem !important;
   padding: 0 !important;
   margin: 0 !important;
-  border-radius: var(--radius-sm, 8px) !important;
+  border-radius: var(--radius-sm) !important;
   border: 1px solid transparent !important;
   background: transparent !important;
   color: var(--text-secondary) !important;
@@ -1112,7 +1184,7 @@ body.dark .long-duty-warning {
   padding: 0.5rem 0.75rem !important;
   font-size: 0.85rem !important;
   font-weight: 600 !important;
-  border-radius: var(--radius-sm, 8px) !important;
+  border-radius: var(--radius-sm) !important;
   border: 1px solid transparent !important;
   cursor: pointer;
   line-height: 1.25;
@@ -1195,7 +1267,7 @@ body.dark .long-duty-warning {
 .modal-content {
   background: var(--card-bg);
   padding: 1.5rem 1.35rem;
-  border-radius: var(--radius-lg, 16px);
+  border-radius: var(--radius-lg);
   max-width: 400px;
   width: min(90%, 400px);
   text-align: center;
@@ -1282,7 +1354,7 @@ body.dark .long-duty-warning {
   margin-top: 0.3rem;
   padding: var(--slide-field-padding);
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--card-bg);
   color: var(--text-color);
   font-size: var(--slide-field-font-size) !important;
@@ -1314,7 +1386,7 @@ body.dark .long-duty-warning {
   padding: 0.7rem 0.75rem;
   margin-top: 0.5rem;
   border: none;
-  border-radius: var(--radius-sm, 8px);
+  border-radius: var(--radius-sm);
   background: var(--primary-color);
   color: var(--primary-contrast, #fff);
   cursor: pointer;
@@ -1363,7 +1435,7 @@ input, select {
   padding: 0.5rem;
   margin-top: 0.25rem;
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--card-bg);
   color: var(--text-color);
   transition: border-color 0.3s, box-shadow 0.3s;
@@ -1380,7 +1452,7 @@ input:focus, select:focus {
   padding: 0.5rem;
   background: var(--card-bg);
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 0.9rem;
   color: var(--text-color);
 }
@@ -1389,7 +1461,7 @@ input:focus, select:focus {
   margin-top: 0.5rem;
   padding: 0.5rem;
   border: 1px solid #f44336;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 0.9rem;
   background: #ffebee;
   color: #c62828;
@@ -1401,7 +1473,7 @@ input:focus, select:focus {
   color: var(--primary-contrast, #fff);
   border: none;
   padding: 0.55rem 1rem;
-  border-radius: var(--radius-sm, 8px);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-weight: 600;
   transition: background-color 0.15s ease;
@@ -1420,7 +1492,7 @@ input:focus, select:focus {
   width: 100%;
   padding: 0.5rem;
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--card-bg);
   color: var(--text-color);
 }
@@ -1432,7 +1504,7 @@ input:focus, select:focus {
   right: 0;
   background: var(--card-bg);
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   max-height: 200px;
   overflow-y: auto;
   z-index: 100;
@@ -1460,7 +1532,7 @@ input:focus, select:focus {
   padding: 1rem;
   background: var(--card-bg);
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--text-color);
 }
 
@@ -1499,7 +1571,7 @@ input:focus, select:focus {
 .modal-content {
   background: var(--card-bg);
   padding: 2rem;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
   max-width: 400px;
   width: 90%;
@@ -1515,7 +1587,7 @@ input:focus, select:focus {
   margin: 0.5rem;
   padding: 0.5rem 1rem;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--primary-color);
   color: white;
   cursor: pointer;
@@ -1525,17 +1597,20 @@ input:focus, select:focus {
   background: var(--primary-hover);
 }
 
-.calendar-container {
-  position: relative;
-}
-
 @media (max-width: 768px) {
   .calendar-grid {
-    gap: 0.2rem;
+    --day-grid-gap: 0.2rem;
+    --day-max-h: 6rem;
   }
 
   .day {
     padding: 0;
+    --marker-font-size: clamp(0.48rem, 2.4vw, 0.6rem);
+    --marker-chip-width: clamp(1.05em, 4.2vw, 1.4em);
+    --marker-chip-width-wide: clamp(1.7em, 6.5vw, 2.3em);
+    --marker-chip-height: clamp(0.95em, 3vw, 1.15em);
+    --event-bar-top: 48%;
+    --event-bar-top-overlap: 58%;
   }
 
   .calendar-page-container {
@@ -1544,5 +1619,33 @@ input:focus, select:focus {
 
   .header-buttons {
     gap: 0.1rem;
+  }
+}
+
+/* Short / narrow phones: denser chrome; shared content min still from JS */
+@media (max-width: 480px), (max-height: 640px) {
+  .calendar-grid {
+    --day-max-h: 5.85rem;
+    --day-grid-gap: 0.2rem;
+    --day-header-h: 1.5rem;
+  }
+
+  .day-header {
+    padding: 0.22rem 0.1rem;
+    font-size: 0.68rem;
+  }
+}
+
+/* Prefer cell-relative chip sizing when container queries are available */
+@container day-cell (max-width: 72px) {
+  .marker {
+    font-size: clamp(0.46rem, 14cqi, 0.58rem);
+    min-width: clamp(1em, 28cqi, 1.35em);
+  }
+
+  .marker.LNR2,
+  .marker.LNR3,
+  .marker.SDF {
+    min-width: clamp(1.55em, 42cqi, 2.2em);
   }
 }

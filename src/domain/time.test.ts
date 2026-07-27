@@ -3,11 +3,14 @@ import {
   combineLocalDateAndTime,
   dayBarPosition,
   formatHHmm,
+  formatHHmmInTZ,
   getHourInTZ,
   getMinutesInTZ,
   getZonedTimeParts,
   nextZonedWallTime,
   parseLocalDateTime,
+  parseZonedDateTime,
+  toDateInputValueInTZ,
   toLocalDateInputValue,
   zonedWallTime,
 } from './time'
@@ -62,6 +65,43 @@ describe('dayBarPosition / formatHHmm', () => {
     const on11 = dayBarPosition(phantomStart, phantomEnd, day11Start, day11End)
     expect(on11.left).toBeCloseTo(0, 5)
     expect(on11.width).toBeCloseTo((7.5 / 24) * 100, 5)
+  })
+})
+
+describe('parseZonedDateTime', () => {
+  it('interprets wall clock in the given zone (NYC vs UTC same label)', () => {
+    // 2024-06-15 14:00 in America/New_York is 18:00Z (EDT)
+    const nyc = parseZonedDateTime(
+      '2024-06-15',
+      '14:00',
+      'America/New_York',
+    )
+    const utc = parseZonedDateTime('2024-06-15', '14:00', 'UTC')
+    // 14:00 EDT is 18:00Z — later than 14:00Z
+    expect(nyc.getTime()).toBeGreaterThan(utc.getTime())
+    expect(formatHHmmInTZ(nyc, 'America/New_York')).toBe('14:00')
+    expect(formatHHmmInTZ(utc, 'UTC')).toBe('14:00')
+    // Westbound: report YYZ 22:00 → release LAX 01:00 *next* civil day
+    const start = parseZonedDateTime(
+      '2024-06-15',
+      '22:00',
+      'America/Toronto',
+    )
+    const end = parseZonedDateTime(
+      '2024-06-16',
+      '01:00',
+      'America/Los_Angeles',
+    )
+    expect(end.getTime()).toBeGreaterThan(start.getTime())
+    const hours = (end.getTime() - start.getTime()) / 3_600_000
+    expect(hours).toBeGreaterThan(5)
+    expect(hours).toBeLessThan(7)
+  })
+
+  it('round-trips date input in zone', () => {
+    const d = parseZonedDateTime('2024-01-10', '09:30', 'UTC')
+    expect(toDateInputValueInTZ(d, 'UTC')).toBe('2024-01-10')
+    expect(formatHHmmInTZ(d, 'UTC')).toBe('09:30')
   })
 })
 

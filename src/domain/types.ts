@@ -84,6 +84,15 @@ export interface StoredDutyEvent {
   freePurpose?: 'sdf' | 'five_lnr_block' | 'manual'
 }
 
+/**
+ * How calendar day cells / event bars are laid out in time.
+ * - zulu: UTC
+ * - device: browser/device local IANA zone
+ * - home: account home base (referenceTZ)
+ * - custom: user-picked IANA zone (calendarDisplayTZ)
+ */
+export type CalendarTimeReference = 'zulu' | 'device' | 'home' | 'custom'
+
 export interface AppSettings {
   theme: 'light' | 'dark'
   timeFormat: TimeFormat
@@ -94,6 +103,10 @@ export interface AppSettings {
   lastSectors: number
   lastAvgSectorTime: AvgSectorTime
   timeFreeOption: TimeFreeOption
+  /** Calendar grid / bar time reference mode. */
+  calendarTimeRef: CalendarTimeReference
+  /** IANA zone when calendarTimeRef === 'custom'. */
+  calendarDisplayTZ: string
 }
 
 export const STORAGE_KEYS = {
@@ -108,6 +121,8 @@ export const STORAGE_KEYS = {
   lastSectors: 'lastSectors',
   lastAvgSectorTime: 'lastAvgSectorTime',
   timeFreeOption: 'timeFreeOption',
+  calendarTimeRef: 'calendarTimeRef',
+  calendarDisplayTZ: 'calendarDisplayTZ',
 } as const
 
 export const MAX_WEEKLY_DUTY_HOURS = 60

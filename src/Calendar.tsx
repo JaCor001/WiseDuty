@@ -3,6 +3,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react'
@@ -42,6 +43,16 @@ import {
   type DebugFocus,
 } from './domain/info-sheet-debug'
 import {
+  dayContentMinRem,
+  isPreferredMarkerDay,
+  markerBandTiers,
+  markerVerticalRole,
+  preferredMarkerLeftPct,
+  preferredMarkerTopPct,
+  resolveMarkerOverlaps,
+  type MarkerLayoutInput,
+} from './domain/marker-layout'
+import {
   eventsOverlap,
   getAbsoluteMaxFdpHours,
   getDutyMarkers,
@@ -57,20 +68,22 @@ import {
   hasSoft70029SdfWarning,
 } from './domain/rest-70029'
 import {
+  addCivilDaysInTimeZone,
   addDaysToDateInputValue,
-  combineLocalDateAndTime,
   dayBarPosition,
   daysBetweenDateInputValues,
-  formatHHmm,
+  formatHHmmInTZ,
   formatTimeDisplay,
   getHourInTZ,
+  getZonedTimeParts,
   getZuluTimeDisplay,
   isOvernightDutyPeriod,
-  overnightAutoEndDate,
   parseDateInputValue,
-  parseLocalDateTime,
-  startOfLocalDay,
-  toLocalDateInputValue,
+  parseZonedDateTime,
+  startOfDayInTimeZone,
+  startOfDayKeyInTimeZone,
+  toDateInputValueInTZ,
+  zonedWallTime,
 } from './domain/time'
 import { useSettings } from './features/settings/SettingsContext'
 import { scheduleTravelRestReminders } from './shared/notifications'
@@ -102,9 +115,17 @@ function Calendar() {
     avgSectorTime,
     setAvgSectorTime,
     timeFreeOption,
+    calendarTimeRef,
+    resolvedCalendarTZ,
   } = useSettings()
 
   const homeBaseTZ = referenceTZ || acclTZ
+  /** Calendar day cells / bars use this IANA zone. */
+  const calendarTZ = resolvedCalendarTZ
+
+  const dayStartInCal = (d: Date) => startOfDayInTimeZone(d, calendarTZ)
+  const dayEndInCal = (d: Date) =>
+    addCivilDaysInTimeZone(dayStartInCal(d), calendarTZ, 1)
 
   const [currentDate, setCurrentDate] = useState(() => new Date())
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
@@ -196,24 +217,37 @@ function Calendar() {
     }
   }, [])
 
-  // Overnight: if end clock is before start clock and end date is still the
-  // start day, roll end date to the next day and blink the date field.
-  // If the user already chose the next day, only show the overnight label.
+  // Overnight: if end instant ≤ start on the same end-date label, roll end date.
   useEffect(() => {
-    if (!showAddDuty || !addDutyDate || !startTime || !endTime) return
-    const startYmd = toLocalDateInputValue(addDutyDate)
-    const auto = overnightAutoEndDate(
-      startYmd,
-      startTime,
-      endDate,
-      endTime,
-    )
-    if (auto && auto !== endDate) {
-      setEndDate(auto)
-      setEndDateShouldBlink(true)
-      setEndDateBlinkKey((k) => k + 1)
+    if (!showAddDuty || !addDutyDate || !startTime || !endTime || !endDate)
+      return
+    const startYmd = toDateInputValueInTZ(addDutyDate, calendarTZ)
+    const sTz = modalStartTZ || modalAcclTZ || acclTZ
+    const eTz = modalEndTZ || modalAcclTZ || acclTZ
+    const start = parseZonedDateTime(startYmd, startTime, sTz)
+    const endOnLabel = parseZonedDateTime(endDate, endTime, eTz)
+    if (isNaN(start.getTime()) || isNaN(endOnLabel.getTime())) return
+    // Same civil end label as start day and end ≤ start → need next end-day
+    if (endDate === startYmd && endOnLabel.getTime() <= start.getTime()) {
+      const auto = addDaysToDateInputValue(endDate, 1)
+      if (auto !== endDate) {
+        setEndDate(auto)
+        setEndDateShouldBlink(true)
+        setEndDateBlinkKey((k) => k + 1)
+      }
     }
-  }, [showAddDuty, addDutyDate, startTime, endTime, endDate])
+  }, [
+    showAddDuty,
+    addDutyDate,
+    startTime,
+    endTime,
+    endDate,
+    calendarTZ,
+    modalStartTZ,
+    modalEndTZ,
+    modalAcclTZ,
+    acclTZ,
+  ])
 
   useEffect(() => {
     if (!endDateShouldBlink) return
@@ -225,26 +259,60 @@ function Calendar() {
     if (!showAddDuty || !addDutyDate || !startTime || !endTime || !endDate) {
       return false
     }
-    return isOvernightDutyPeriod(
-      toLocalDateInputValue(addDutyDate),
-      startTime,
-      endDate,
-      endTime,
+    const startYmd = toDateInputValueInTZ(addDutyDate, calendarTZ)
+    const sTz = modalStartTZ || modalAcclTZ || acclTZ
+    const eTz = modalEndTZ || modalAcclTZ || acclTZ
+    const start = parseZonedDateTime(startYmd, startTime, sTz)
+    const end = parseZonedDateTime(endDate, endTime, eTz)
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start)
+      return false
+    // Spans midnight in calendar display zone, or end civil day ≠ start civil day
+    const startCal = toDateInputValueInTZ(start, calendarTZ)
+    const endCal = toDateInputValueInTZ(end, calendarTZ)
+    return (
+      startCal !== endCal ||
+      isOvernightDutyPeriod(startYmd, startTime, endDate, endTime)
     )
-  }, [showAddDuty, addDutyDate, startTime, endTime, endDate])
+  }, [
+    showAddDuty,
+    addDutyDate,
+    startTime,
+    endTime,
+    endDate,
+    calendarTZ,
+    modalStartTZ,
+    modalEndTZ,
+    modalAcclTZ,
+    acclTZ,
+  ])
 
   const longDutyPeriodWarning = useMemo(() => {
     if (!showAddDuty || !addDutyDate || !startTime || !endTime || !endDate) {
       return false
     }
-    const start = combineLocalDateAndTime(addDutyDate, startTime)
-    const end = parseLocalDateTime(endDate, endTime)
+    const startYmd = toDateInputValueInTZ(addDutyDate, calendarTZ)
+    const sTz = modalStartTZ || modalAcclTZ || acclTZ
+    const eTz = modalEndTZ || modalAcclTZ || acclTZ
+    const start = parseZonedDateTime(startYmd, startTime, sTz)
+    const end = parseZonedDateTime(endDate, endTime, eTz)
     if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
       return false
     }
     const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
     return hours > getAbsoluteMaxFdpHours(regulator)
-  }, [showAddDuty, addDutyDate, startTime, endTime, endDate, regulator])
+  }, [
+    showAddDuty,
+    addDutyDate,
+    startTime,
+    endTime,
+    endDate,
+    regulator,
+    calendarTZ,
+    modalStartTZ,
+    modalEndTZ,
+    modalAcclTZ,
+    acclTZ,
+  ])
 
   const now = useMemo(() => new Date(), [])
   const minMonth = useMemo(
@@ -257,29 +325,38 @@ function Calendar() {
   )
 
   const getCalendarDays = (date: Date) => {
-    const year = date.getFullYear()
-    const month = date.getMonth()
-    const firstDayOfMonth = new Date(year, month, 1)
-    const lastDayOfMonth = new Date(year, month + 1, 0)
-    const startDate = new Date(firstDayOfMonth)
-    startDate.setDate(firstDayOfMonth.getDate() - firstDayOfMonth.getDay())
-    const endDateLocal = new Date(lastDayOfMonth)
-    endDateLocal.setDate(lastDayOfMonth.getDate() + (6 - lastDayOfMonth.getDay()))
+    const p = getZonedTimeParts(date, calendarTZ)
+    const firstOfMonth = zonedWallTime(calendarTZ, p.year, p.month, 1, 0, 0)
+    const wdLabel = new Intl.DateTimeFormat('en-US', {
+      timeZone: calendarTZ,
+      weekday: 'short',
+    }).format(firstOfMonth)
+    const wdMap: Record<string, number> = {
+      Sun: 0,
+      Mon: 1,
+      Tue: 2,
+      Wed: 3,
+      Thu: 4,
+      Fri: 5,
+      Sat: 6,
+    }
+    const firstDow = wdMap[wdLabel] ?? 0
+    // 6 weeks fixed grid
+    const gridStart = addCivilDaysInTimeZone(firstOfMonth, calendarTZ, -firstDow)
     const days: Date[] = []
-    const current = new Date(startDate)
-    while (current <= endDateLocal) {
-      days.push(new Date(current))
-      current.setDate(current.getDate() + 1)
+    let cur = gridStart
+    for (let i = 0; i < 42; i++) {
+      days.push(cur)
+      cur = addCivilDaysInTimeZone(cur, calendarTZ, 1)
     }
     return days
   }
 
   const getDayStatus = (date: Date) => {
-    const dayEvents = eventsOnLocalDay(events, date)
+    const dayEvents = eventsOnLocalDay(events, date, calendarTZ)
     if (dayEvents.some((e) => e.violated)) return 'red'
-    const dayStart = startOfLocalDay(date)
-    const dayEnd = new Date(dayStart)
-    dayEnd.setDate(dayEnd.getDate() + 1)
+    const dayStart = dayStartInCal(date)
+    const dayEnd = dayEndInCal(date)
     const has70029 = report70029.violations.some(
       (v) => v.windowEnd >= dayStart && v.windowEnd < dayEnd,
     )
@@ -298,20 +375,23 @@ function Calendar() {
 
   /** Display SDFs (load-bearing / required before next) that overlap a local day. */
   const sdfsOnDay = (date: Date) => {
-    const dayStart = startOfLocalDay(date)
-    const dayEnd = new Date(dayStart)
-    dayEnd.setDate(dayEnd.getDate() + 1)
+    const dayStart = dayStartInCal(date)
+    const dayEnd = dayEndInCal(date)
     return report70029.displaySdfs.filter(
       (d) => d.sdf.start < dayEnd && d.sdf.end > dayStart,
     )
   }
 
   const renderEventBars = (date: Date) => {
-    const dayStart = startOfLocalDay(date)
-    const dayEnd = new Date(dayStart)
-    dayEnd.setDate(dayEnd.getDate() + 1)
-    const dayEvents = eventsOnLocalDay(events, date)
+    const dayStart = dayStartInCal(date)
+    const dayEnd = dayEndInCal(date)
+    const dayEvents = eventsOnLocalDay(events, date, calendarTZ)
     const allBars: ReactNode[] = []
+    /** Default / stacked rest bar tops — match Calendar.css --event-bar-top* */
+    const BAR_TOP = 'var(--event-bar-top, 46%)'
+    const BAR_TOP_OVERLAP = 'var(--event-bar-top-overlap, 56%)'
+    const BAR_TOP_PCT = 46
+    const BAR_TOP_OVERLAP_PCT = 56
     const allMarkers: {
       type: DutyMarker
       eventId: string
@@ -319,11 +399,17 @@ function Calendar() {
       left: number
       width: number
       barTop: string
+      barTopPct: number
       violated?: boolean
+      /** Display-only SDF (700.29) chips, not tied to a DutyEvent marker type list */
+      sdfProspective?: boolean
+      sdfReasons?: string[]
+      sdfRef?: ReturnType<typeof sdfsOnDay>[number]['sdf']
     }[] = []
 
     dayEvents.forEach((event) => {
-      let barTop = '30%'
+      let barTop = BAR_TOP
+      let barTopPct = BAR_TOP_PCT
       if (event.type === 'rest') {
         const overlappingRest = dayEvents.find(
           (e) =>
@@ -335,7 +421,10 @@ function Calendar() {
           const thisDuration = event.end.getTime() - event.start.getTime()
           const otherDuration =
             overlappingRest.end.getTime() - overlappingRest.start.getTime()
-          if (thisDuration > otherDuration) barTop = '42%'
+          if (thisDuration > otherDuration) {
+            barTop = BAR_TOP_OVERLAP
+            barTopPct = BAR_TOP_OVERLAP_PCT
+          }
         }
       }
 
@@ -348,7 +437,8 @@ function Calendar() {
         dayEnd,
       )
 
-      // Classification uses acclimatized TZ; E on start day, L/N on end day only
+      // Classification uses acclimatized TZ; E on start day, L/N on end day only.
+      // Rest chips (RR/LNR/…) only on the preferred (widest) day of the bar.
       const markers = getDutyMarkers(
         event,
         regulator,
@@ -356,7 +446,11 @@ function Calendar() {
         isStart,
         isEnd,
       )
-      markers.forEach((marker) =>
+      const showRestChip =
+        event.type !== 'rest' ||
+        isPreferredMarkerDay(event.start, event.end, dayStart, dayEnd)
+      markers.forEach((marker) => {
+        if (event.type === 'rest' && !showRestChip) return
         allMarkers.push({
           type: marker,
           eventId: event.id,
@@ -364,9 +458,10 @@ function Calendar() {
           left,
           width,
           barTop,
+          barTopPct,
           violated: event.violated,
-        }),
-      )
+        })
+      })
 
       // Key includes day so multi-day events don't collide across cells
       const barClass =
@@ -377,11 +472,18 @@ function Calendar() {
             : event.type === 'free'
               ? 'free'
               : event.type
+      // Square ends at midnight so multi-day bars look cut, not finished/restarted
+      const spanClass = [
+        !isStart ? 'event-bar--open-start' : '',
+        !isEnd ? 'event-bar--open-end' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
 
       allBars.push(
         <div
           key={`${event.id}-${dayStart.toISOString()}`}
-          className={`event-bar ${barClass}${event.violated ? ' violated' : ''}`}
+          className={`event-bar ${barClass}${spanClass ? ` ${spanClass}` : ''}${event.violated ? ' violated' : ''}`}
           style={{ left: `${left}%`, width: `${width}%`, top: barTop }}
           title={event.title}
           onClick={(e) => {
@@ -507,7 +609,7 @@ function Calendar() {
           .join(' ')
 
         // Center thinner contour on the solid rest track
-        let phantomTop = '30%'
+        let phantomTop = BAR_TOP
         const solidOnDay = dayEvents.find((e) => e.id === rest.id)
         if (solidOnDay) {
           const overlappingRest = dayEvents.find(
@@ -520,7 +622,7 @@ function Calendar() {
             const thisDuration = rest.end.getTime() - rest.start.getTime()
             const otherDuration =
               overlappingRest.end.getTime() - overlappingRest.start.getTime()
-            if (thisDuration > otherDuration) phantomTop = '42%'
+            if (thisDuration > otherDuration) phantomTop = BAR_TOP_OVERLAP
           }
         }
 
@@ -558,8 +660,121 @@ function Calendar() {
       }
     }
 
-    const markerElements = allMarkers.map((marker, index) => {
+    // SDF chips: one chip on the preferred (widest) day of the free span
+    sdfsOnDay(date).forEach((display, index) => {
+      const sdf = display.sdf
+      if (!isPreferredMarkerDay(sdf.start, sdf.end, dayStart, dayEnd)) return
+      const prospective = display.reasons.includes('prospective')
+      const { left, width } = dayBarPosition(
+        sdf.start,
+        sdf.end,
+        dayStart,
+        dayEnd,
+      )
+      allMarkers.push({
+        type: 'SDF',
+        eventId: `sdf-${sdf.start.toISOString()}-${index}`,
+        // Placeholder duty event is never used for SDF display chips
+        event: {
+          id: `sdf-display-${index}`,
+          title: 'SDF',
+          type: 'free',
+          start: sdf.start,
+          end: sdf.end,
+        },
+        left,
+        width,
+        barTop: BAR_TOP,
+        // Sit in the lower rest band under the default bar line
+        barTopPct: BAR_TOP_PCT,
+        sdfProspective: prospective,
+        sdfReasons: display.reasons,
+        sdfRef: sdf,
+      })
+    })
+
+    /*
+     * Chip size as % of day cell — approximate for collision math.
+     * Real chips use fluid em/vw CSS; these track typical 7-col cells.
+     * Bar height is pixel-based (clamp 6–10px) so use a generous cell-%
+     * for collision; actual render top uses CSS var(--event-bar-height).
+     */
+    const chipHPct = 13
+    /* Match visual chip footprint for collision math (not oversized right reserve) */
+    const chipWNarrowPct = 18
+    const chipWWidePct = 28
+    const barHPct = 10
+    /** Lateral inset for collision math (% of cell) — mirrors CSS --marker-gap */
+    const cellGapPct = 3
+    /** Symmetric bar↔chip clearance used in CSS and layout estimates */
+    const barChipGapPx = 4
+    // Keep chips below the day-number band (today pill ~1.35rem on short cells)
+    const minTopPct = 22
+    const maxBottomPct = 97
+    const edgeGapCss = 'var(--marker-gap, 6px)'
+
+    const layoutInputs: MarkerLayoutInput[] = allMarkers.map((marker, index) => {
+      const role = markerVerticalRole(marker.type)
+      const restMarker =
+        marker.type === 'LNR' ||
+        marker.type === 'LNR2' ||
+        marker.type === 'LNR3' ||
+        marker.type === 'RR' ||
+        marker.type === 'SDF'
+      const isWide =
+        marker.type === 'LNR2' ||
+        marker.type === 'LNR3' ||
+        marker.type === 'SDF' ||
+        (marker.violated && restMarker)
+      const widthPct = isWide ? chipWWidePct : chipWNarrowPct
       const anchor = markerBarAnchor(marker.type)
+      const leftPct = preferredMarkerLeftPct(
+        marker.left,
+        marker.width,
+        widthPct,
+        anchor,
+        cellGapPct,
+      )
+      const preferredTopPct = preferredMarkerTopPct(
+        role,
+        marker.barTopPct,
+        barHPct,
+        chipHPct,
+        cellGapPct,
+        minTopPct,
+        maxBottomPct,
+      )
+      let barAttachXPct = marker.left + marker.width / 2
+      if (anchor === 'start') barAttachXPct = marker.left
+      else if (anchor === 'end') barAttachXPct = marker.left + marker.width
+
+      return {
+        id: `${marker.eventId}-${marker.type}-${index}`,
+        role,
+        preferredTopPct,
+        leftPct,
+        widthPct,
+        heightPct: chipHPct,
+        barTopPct: marker.barTopPct,
+        barHPct,
+        barAttachXPct,
+      }
+    })
+
+    const resolved = resolveMarkerOverlaps(layoutInputs, {
+      gapPct: 1.8,
+      minTopPct,
+      maxBottomPct,
+      leaderThresholdPct: 4,
+    })
+
+    const markerElements: ReactNode[] = []
+    allMarkers.forEach((marker, index) => {
+      const layoutId = `${marker.eventId}-${marker.type}-${index}`
+      const place = resolved.find((r) => r.id === layoutId)
+      const layoutIn = layoutInputs.find((l) => l.id === layoutId)
+      if (!place || !layoutIn) return
+
       const restMarker =
         marker.type === 'LNR' ||
         marker.type === 'LNR2' ||
@@ -572,27 +787,104 @@ function Calendar() {
         marker.type === 'SDF' ||
         (marker.violated && restMarker)
       const violatedClass = marker.violated && restMarker
-      const gap = 'var(--marker-gap, 6px)'
+      const chipH = 'var(--marker-chip-height, 1.2em)'
+      const barTopCss = marker.barTop
+      const anchor = markerBarAnchor(marker.type)
+      // Stack offset from preferred (collision resolution), still in cell %
+      const stackDeltaPct = place.topPct - layoutIn.preferredTopPct
+      /*
+       * Preferred band uses real CSS bar height so below chips never sit on the
+       * bar; stackDelta only applies vertical separation between chips.
+       */
+      const top =
+        place.role === 'above'
+          ? `calc(${barTopCss} - ${chipH} - ${barChipGapPx}px + ${stackDeltaPct}%)`
+          : `calc(${barTopCss} + var(--event-bar-height) + ${barChipGapPx}px + ${stackDeltaPct}%)`
+
+      /*
+       * Lateral placement — same min gap on left and right edges.
+       * Preferred left depends on anchor; clamp uses real chip width vars so
+       * neither side reserves a large % “budget” (that made the right look
+       * more padded than the left).
+       */
       const chipW = isWide
         ? 'var(--marker-chip-width-wide, 2.4em)'
         : 'var(--marker-chip-width, 1.55em)'
-      const chipH = 'var(--marker-chip-height, 1.2em)'
-      const barH = 'clamp(6px, 1.1vh, 10px)'
-
-      const preferredTop = `calc(${marker.barTop} + ${barH} + 2px)`
-      const top = `clamp(${gap}, ${preferredTop}, calc(100% - ${gap} - ${chipH}))`
-
-      const barLeft = marker.left
-      const barRight = marker.left + marker.width
+      const maxWidthCss = `calc(100% - 2 * ${edgeGapCss})`
+      // Preferred left (top-left of chip) before edge clamp
       let preferredLeft: string
-      if (anchor === 'start') {
-        preferredLeft = `${barLeft}%`
-      } else if (anchor === 'end') {
-        preferredLeft = `calc(${barRight}% - ${chipW})`
+      if (anchor === 'end') {
+        const barRightPct = Math.min(100, marker.left + marker.width)
+        preferredLeft = `calc(${barRightPct}% - ${chipW})`
+      } else if (anchor === 'start') {
+        preferredLeft = `${marker.left}%`
       } else {
-        preferredLeft = `calc(${barLeft + marker.width / 2}% - ${chipW} / 2)`
+        preferredLeft = `${place.leftPct}%`
       }
-      const leftStyle = `clamp(${gap}, ${preferredLeft}, calc(100% - ${gap} - ${chipW}))`
+      const leftStyle = `clamp(${edgeGapCss}, ${preferredLeft}, calc(100% - ${edgeGapCss} - ${chipW}))`
+      const horizStyle: CSSProperties = {
+        left: leftStyle,
+        right: 'auto',
+        maxWidth: maxWidthCss,
+        minWidth: 0,
+        width: 'max-content',
+      }
+
+      if (place.leader) {
+        const { x1, y1, y2 } = place.leader
+        const topY = Math.min(y1, y2)
+        const height = Math.abs(y2 - y1)
+        const leaderLeft = `clamp(${edgeGapCss}, ${x1}%, calc(100% - ${edgeGapCss}))`
+        if (height > 0.4) {
+          markerElements.push(
+            <div
+              key={`leader-${layoutId}`}
+              className="marker-leader"
+              style={{
+                left: leaderLeft,
+                top: `${topY}%`,
+                height: `${height}%`,
+              }}
+              aria-hidden
+            />,
+          )
+        }
+      }
+
+      // Display SDF (700.29) chips
+      if (marker.sdfRef) {
+        const prospective = !!marker.sdfProspective
+        markerElements.push(
+          <button
+            type="button"
+            key={layoutId}
+            className={`marker marker-anchored marker-button SDF${prospective ? ' SDF-prospective' : ''}`}
+            style={{ top, ...horizStyle }}
+            title={
+              prospective
+                ? 'Single day free from duty needed before further duty (CAR 700.29) — tap for details'
+                : 'Single day free from duty (CAR 700.29) — tap for details'
+            }
+            aria-label={
+              prospective
+                ? 'Single day free from duty needed. Tap for definition and why it applies.'
+                : 'Single day free from duty. Tap for definition and why it applies.'
+            }
+            onClick={(e) => {
+              e.stopPropagation()
+              openInfoSheet(infoSheetFromSdf(marker.sdfRef!, marker.sdfReasons), {
+                kind: 'sdf',
+                sdf: marker.sdfRef!,
+                reasons: marker.sdfReasons,
+              })
+            }}
+          >
+            {prospective ? 'SDF?' : markerChipLabel('SDF')}
+          </button>,
+        )
+        return
+      }
+
       const label = markerChipLabel(marker.type, marker.violated)
       const explanation = explainMarker(
         marker.type,
@@ -602,14 +894,14 @@ function Calendar() {
         homeBaseTZ,
       )
 
-      return (
+      markerElements.push(
         <button
           type="button"
-          key={`${marker.eventId}-${marker.type}-${dayStart.toISOString()}-${index}`}
+          key={layoutId}
           className={`marker marker-anchored marker-button ${marker.type}${violatedClass ? ' LNR-violated' : ''}`}
           style={{
             top,
-            left: leftStyle,
+            ...horizStyle,
           }}
           title={`${explanation.label} — tap for definition`}
           aria-label={`${explanation.label}. Tap for definition and why it applies.`}
@@ -632,57 +924,11 @@ function Calendar() {
           }}
         >
           {label}
-        </button>
+        </button>,
       )
     })
 
-    // SDF chips: load-bearing, completed free day before next, or prospective slot
-    const sdfMarkers = sdfsOnDay(date).map((display, index) => {
-      const sdf = display.sdf
-      const prospective = display.reasons.includes('prospective')
-      const { left, width } = dayBarPosition(
-        sdf.start,
-        sdf.end,
-        dayStart,
-        dayEnd,
-      )
-      const gap = 'var(--marker-gap, 6px)'
-      const chipW = 'var(--marker-chip-width-wide, 2.4em)'
-      const chipH = 'var(--marker-chip-height, 1.2em)'
-      const preferredLeft = `calc(${left + width / 2}% - ${chipW} / 2)`
-      const leftStyle = `clamp(${gap}, ${preferredLeft}, calc(100% - ${gap} - ${chipW}))`
-      const top = `clamp(${gap}, calc(100% - ${gap} - ${chipH} - 14px), calc(100% - ${gap} - ${chipH}))`
-      return (
-        <button
-          type="button"
-          key={`sdf-${sdf.start.toISOString()}-${dayStart.toISOString()}-${index}`}
-          className={`marker marker-anchored marker-button SDF${prospective ? ' SDF-prospective' : ''}`}
-          style={{ top, left: leftStyle }}
-          title={
-            prospective
-              ? 'Single day free from duty needed before further duty (CAR 700.29) — tap for details'
-              : 'Single day free from duty (CAR 700.29) — tap for details'
-          }
-          aria-label={
-            prospective
-              ? 'Single day free from duty needed. Tap for definition and why it applies.'
-              : 'Single day free from duty. Tap for definition and why it applies.'
-          }
-          onClick={(e) => {
-            e.stopPropagation()
-            openInfoSheet(infoSheetFromSdf(sdf, display.reasons), {
-              kind: 'sdf',
-              sdf,
-              reasons: display.reasons,
-            })
-          }}
-        >
-          {prospective ? 'SDF?' : markerChipLabel('SDF')}
-        </button>
-      )
-    })
-
-    return [...allBars, ...markerElements, ...sdfMarkers]
+    return [...allBars, ...markerElements]
   }
 
   const getDayActions = (date: Date) => {
@@ -707,8 +953,13 @@ function Calendar() {
   }
 
   const addAuxEvent = (type: 'reserve' | 'standby' | 'free', date: Date) => {
-    const start = combineLocalDateAndTime(date, '08:00')
-    const end = combineLocalDateAndTime(date, type === 'free' ? '20:00' : '18:00')
+    const ymd = toDateInputValueInTZ(date, calendarTZ)
+    const start = parseZonedDateTime(ymd, '08:00', calendarTZ)
+    const end = parseZonedDateTime(
+      ymd,
+      type === 'free' ? '20:00' : '18:00',
+      calendarTZ,
+    )
     // Multi-day free default for free: 2 nights worth will be adjusted by user
     const endFree =
       type === 'free'
@@ -740,7 +991,7 @@ function Calendar() {
       events,
       acclTZ,
       timeFreeOption,
-      selectedDate ? startOfLocalDay(selectedDate) : null,
+      selectedDate ? dayStartInCal(selectedDate) : null,
     )
     setFreeProposals(props)
     setShowFreeProposals(true)
@@ -820,12 +1071,14 @@ function Calendar() {
     if (!newStart) return
 
     const prevStartYmd = addDutyDate
-      ? toLocalDateInputValue(addDutyDate)
+      ? toDateInputValueInTZ(addDutyDate, calendarTZ)
       : newStartYmd
     const delta = daysBetweenDateInputValues(prevStartYmd, newStartYmd)
 
-    setAddDutyDate(newStart)
-    selectDate(newStart)
+    // Store as calendar-TZ midnight of that civil date
+    const dayInst = startOfDayKeyInTimeZone(newStartYmd, calendarTZ)
+    setAddDutyDate(dayInst)
+    selectDate(dayInst)
 
     if (delta === 0) return
 
@@ -844,16 +1097,18 @@ function Calendar() {
   const handleClick = (date: Date) => {
     if (showMenu) return
     if (showAddDuty) {
-      applyStartDateChange(toLocalDateInputValue(date))
+      applyStartDateChange(toDateInputValueInTZ(date, calendarTZ))
     } else if (isEdit) {
       const duty = findDutyOnDate(events, date)
       if (duty) {
         selectDate(date)
         setEditEvent(duty)
-        setAddDutyDate(startOfLocalDay(duty.start))
-        setStartTime(formatHHmm(duty.start))
-        setEndDate(toLocalDateInputValue(duty.end))
-        setEndTime(formatHHmm(duty.end))
+        const sTz = duty.startTZ || duty.acclTZ || acclTZ
+        const eTz = duty.endTZ || duty.acclTZ || acclTZ
+        setAddDutyDate(startOfDayInTimeZone(duty.start, calendarTZ))
+        setStartTime(formatHHmmInTZ(duty.start, sTz))
+        setEndDate(toDateInputValueInTZ(duty.end, eTz))
+        setEndTime(formatHHmmInTZ(duty.end, eTz))
         setModalAcclTZ(duty.acclTZ || acclTZ)
         setModalStartTZ(duty.startTZ || duty.acclTZ || acclTZ)
         setModalEndTZ(duty.endTZ || duty.acclTZ || acclTZ)
@@ -876,7 +1131,7 @@ function Calendar() {
     setShowAddDuty(true)
     setShowMenu(false)
     setAddDutyDate(date)
-    setEndDate(toLocalDateInputValue(date))
+    setEndDate(toDateInputValueInTZ(date, calendarTZ))
     setRestType('12h')
     setIsEdit(false)
     setEditEvent(null)
@@ -897,10 +1152,12 @@ function Calendar() {
 
     setIsEdit(true)
     setEditEvent(event)
-    setAddDutyDate(startOfLocalDay(event.start))
-    setStartTime(formatHHmm(event.start))
-    setEndDate(toLocalDateInputValue(event.end))
-    setEndTime(formatHHmm(event.end))
+    const sTz = event.startTZ || event.acclTZ || acclTZ
+    const eTz = event.endTZ || event.acclTZ || acclTZ
+    setAddDutyDate(startOfDayInTimeZone(event.start, calendarTZ))
+    setStartTime(formatHHmmInTZ(event.start, sTz))
+    setEndDate(toDateInputValueInTZ(event.end, eTz))
+    setEndTime(formatHHmmInTZ(event.end, eTz))
     setModalAcclTZ(event.acclTZ || acclTZ)
     setModalStartTZ(event.startTZ || event.acclTZ || acclTZ)
     setModalEndTZ(event.endTZ || event.acclTZ || acclTZ)
@@ -958,22 +1215,26 @@ function Calendar() {
       return
     }
 
-    const start = combineLocalDateAndTime(addDutyDate, startTime)
-    const end = parseLocalDateTime(endDate, endTime)
+    const dutyAccl = modalAcclTZ || acclTZ
+    const dutyStartLoc = modalStartTZ || dutyAccl
+    const dutyEndLoc = modalEndTZ || dutyAccl
+    // Date fields + times are wall clock in start/end location TZ (fallback accl / global)
+    const startYmd = toDateInputValueInTZ(addDutyDate, calendarTZ)
+    const start = parseZonedDateTime(startYmd, startTime, dutyStartLoc)
+    const end = parseZonedDateTime(endDate, endTime, dutyEndLoc)
 
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       setValidationMessage('Invalid date/time format. Please check your inputs.')
       return
     }
     if (start >= end) {
-      setValidationMessage('End time must be after start time.')
+      setValidationMessage(
+        'End time must be after start time (check times and location time zones).',
+      )
       return
     }
 
     const duration = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
-    const dutyAccl = modalAcclTZ || acclTZ
-    const dutyStartLoc = modalStartTZ || dutyAccl
-    const dutyEndLoc = modalEndTZ || dutyAccl
     const startHour = getHourInTZ(start, dutyAccl)
     const maxDuty = getMaxFdpHours(regulator, startHour, sectors, avgSectorTime)
 
@@ -1147,9 +1408,24 @@ function Calendar() {
       if (!result.ok) {
         setIsEdit(true)
         setEditEvent(newEvent)
-        setStartTime(formatHHmm(newEvent.start))
-        setEndDate(toLocalDateInputValue(newEvent.end))
-        setEndTime(formatHHmm(newEvent.end))
+        setStartTime(
+          formatHHmmInTZ(
+            newEvent.start,
+            newEvent.startTZ || newEvent.acclTZ || acclTZ,
+          ),
+        )
+        setEndDate(
+          toDateInputValueInTZ(
+            newEvent.end,
+            newEvent.endTZ || newEvent.acclTZ || acclTZ,
+          ),
+        )
+        setEndTime(
+          formatHHmmInTZ(
+            newEvent.end,
+            newEvent.endTZ || newEvent.acclTZ || acclTZ,
+          ),
+        )
         setModalAcclTZ(newEvent.acclTZ || acclTZ)
         setModalStartTZ(newEvent.startTZ || acclTZ)
         setModalEndTZ(newEvent.endTZ || acclTZ)
@@ -1173,16 +1449,208 @@ function Calendar() {
 
   const days = useMemo(
     () => getCalendarDays(currentDate),
-    [currentDate],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getCalendarDays closes over calendarTZ
+    [currentDate, calendarTZ],
   )
+
+  /**
+   * Content height needed for one day (rem) from bars + resolved marker tiers.
+   * Used only to size the whole grid uniformly — not per-cell heights.
+   */
+  const computeDayContentMinRem = (date: Date): number => {
+    const dayStart = dayStartInCal(date)
+    const dayEnd = dayEndInCal(date)
+    const dayEvents = eventsOnLocalDay(events, date, calendarTZ)
+    const BAR_TOP_PCT = 46
+    const BAR_TOP_OVERLAP_PCT = 56
+
+    type MarkerStub = {
+      type: DutyMarker
+      eventId: string
+      left: number
+      width: number
+      barTopPct: number
+      violated?: boolean
+    }
+    const stubs: MarkerStub[] = []
+    let hasBar = dayEvents.length > 0
+
+    dayEvents.forEach((event) => {
+      let barTopPct = BAR_TOP_PCT
+      if (event.type === 'rest') {
+        const overlappingRest = dayEvents.find(
+          (e) =>
+            e.type === 'rest' &&
+            e.id !== event.id &&
+            eventsOverlap(e.start, e.end, event.start, event.end),
+        )
+        if (overlappingRest) {
+          const thisDuration = event.end.getTime() - event.start.getTime()
+          const otherDuration =
+            overlappingRest.end.getTime() - overlappingRest.start.getTime()
+          if (thisDuration > otherDuration) barTopPct = BAR_TOP_OVERLAP_PCT
+        }
+      }
+      const isStart = event.start >= dayStart && event.start < dayEnd
+      const isEnd = event.end > dayStart && event.end <= dayEnd
+      const { left, width } = dayBarPosition(
+        event.start,
+        event.end,
+        dayStart,
+        dayEnd,
+      )
+      const showRestChip =
+        event.type !== 'rest' ||
+        isPreferredMarkerDay(event.start, event.end, dayStart, dayEnd)
+      getDutyMarkers(event, regulator, acclTZ, isStart, isEnd).forEach(
+        (marker) => {
+          if (event.type === 'rest' && !showRestChip) return
+          stubs.push({
+            type: marker,
+            eventId: event.id,
+            left,
+            width,
+            barTopPct,
+            violated: event.violated,
+          })
+        },
+      )
+    })
+
+    // Phantom contours count as bar presence on days they cover
+    {
+      const dutiesSorted = events
+        .filter((e) => e.type === 'duty')
+        .sort((a, b) => a.start.getTime() - b.start.getTime())
+      const rests = events.filter(
+        (e) => e.type === 'rest' && e.id.endsWith('-rest'),
+      )
+      for (const rest of rests) {
+        const dutyId = rest.id.slice(0, -'-rest'.length)
+        const dutyIdx = dutiesSorted.findIndex((d) => d.id === dutyId)
+        if (dutyIdx < 0) continue
+        const phantom = phantomDisruptiveRestExtension(
+          dutiesSorted[dutyIdx],
+          rest,
+          regulator,
+          acclTZ,
+          dutiesSorted[dutyIdx + 1],
+        )
+        if (!phantom || phantom.end.getTime() <= rest.end.getTime()) continue
+        const phantomStart = rest.end
+        if (
+          phantom.end.getTime() > dayStart.getTime() &&
+          phantomStart.getTime() < dayEnd.getTime()
+        ) {
+          hasBar = true
+        }
+      }
+    }
+
+    sdfsOnDay(date).forEach((display, index) => {
+      const sdf = display.sdf
+      if (!isPreferredMarkerDay(sdf.start, sdf.end, dayStart, dayEnd)) return
+      const { left, width } = dayBarPosition(
+        sdf.start,
+        sdf.end,
+        dayStart,
+        dayEnd,
+      )
+      stubs.push({
+        type: 'SDF',
+        eventId: `sdf-${sdf.start.toISOString()}-${index}`,
+        left,
+        width,
+        barTopPct: BAR_TOP_PCT,
+      })
+    })
+
+    const chipHPct = 13
+    const chipWNarrowPct = 18
+    const chipWWidePct = 30
+    const barHPct = 10
+    const cellGapPct = 3
+    const minTopPct = 22
+    const maxBottomPct = 97
+
+    const layoutInputs: MarkerLayoutInput[] = stubs.map((marker, index) => {
+      const role = markerVerticalRole(marker.type)
+      const restMarker =
+        marker.type === 'LNR' ||
+        marker.type === 'LNR2' ||
+        marker.type === 'LNR3' ||
+        marker.type === 'RR' ||
+        marker.type === 'SDF'
+      const isWide =
+        marker.type === 'LNR2' ||
+        marker.type === 'LNR3' ||
+        marker.type === 'SDF' ||
+        (marker.violated && restMarker)
+      const widthPct = isWide ? chipWWidePct : chipWNarrowPct
+      const anchor = markerBarAnchor(marker.type)
+      const leftPct = preferredMarkerLeftPct(
+        marker.left,
+        marker.width,
+        widthPct,
+        anchor,
+        cellGapPct,
+      )
+      const preferredTopPct = preferredMarkerTopPct(
+        role,
+        marker.barTopPct,
+        barHPct,
+        chipHPct,
+        cellGapPct,
+        minTopPct,
+        maxBottomPct,
+      )
+      let barAttachXPct = marker.left + marker.width / 2
+      if (anchor === 'start') barAttachXPct = marker.left
+      else if (anchor === 'end') barAttachXPct = marker.left + marker.width
+      return {
+        id: `${marker.eventId}-${marker.type}-${index}`,
+        role,
+        preferredTopPct,
+        leftPct,
+        widthPct,
+        heightPct: chipHPct,
+        barTopPct: marker.barTopPct,
+        barHPct,
+        barAttachXPct,
+      }
+    })
+
+    const resolved = resolveMarkerOverlaps(layoutInputs, {
+      gapPct: 1.8,
+      minTopPct,
+      maxBottomPct,
+      leaderThresholdPct: 4,
+    })
+
+    return dayContentMinRem({
+      hasBar: hasBar || stubs.length > 0,
+      aboveTiers: markerBandTiers(resolved, 'above'),
+      belowTiers: markerBandTiers(resolved, 'below'),
+    })
+  }
+
+  /** One height for every day cell = densest content need in the month grid. */
+  const sharedDayMinRem = useMemo(() => {
+    let maxRem = 2.75
+    for (const d of days) {
+      maxRem = Math.max(maxRem, computeDayContentMinRem(d))
+    }
+    return Math.min(6.25, maxRem)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pure layout from events/month
+  }, [days, events, regulator, acclTZ, report70029.displaySdfs, calendarTZ])
 
   const isInRange = (date: Date) => {
     if (!showAddDuty || !addDutyDate) return false
-    const start = startOfLocalDay(addDutyDate)
+    const start = dayStartInCal(addDutyDate)
     const end = endDate
-      ? startOfLocalDay(parseLocalDateTime(endDate, '00:00'))
+      ? startOfDayKeyInTimeZone(endDate, calendarTZ)
       : start
-    const d = startOfLocalDay(date)
+    const d = dayStartInCal(date)
     return d.getTime() >= start.getTime() && d.getTime() <= end.getTime()
   }
 
@@ -1246,10 +1714,11 @@ function Calendar() {
                 </button>
               )}
               <span className="month-label">
-                {currentDate.toLocaleDateString('en-US', {
+                {new Intl.DateTimeFormat('en-US', {
                   month: 'long',
                   year: 'numeric',
-                })}
+                  timeZone: calendarTZ,
+                }).format(currentDate)}
               </span>
               {currentDate < maxMonth && (
                 <button
@@ -1273,19 +1742,38 @@ function Calendar() {
                 </button>
               )}
             </h1>
+            <p className="calendar-tz-badge" title="Calendar time reference (Settings)">
+              {calendarTimeRef === 'zulu'
+                ? 'Zulu (UTC)'
+                : calendarTimeRef === 'home'
+                  ? `Home · ${calendarTZ.replace(/_/g, ' ')}`
+                  : calendarTimeRef === 'custom'
+                    ? calendarTZ.replace(/_/g, ' ')
+                    : `Local · ${calendarTZ.replace(/_/g, ' ')}`}
+            </p>
           </div>
           <div className="calendar-container">
-            <div className="calendar-grid">
+            <div
+              className="calendar-grid"
+              style={
+                {
+                  ['--day-min-h']: `${sharedDayMinRem}rem`,
+                } as CSSProperties
+              }
+            >
               {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
                 <div key={day} className="day-header">
                   {day}
                 </div>
               ))}
               {days.map((date: Date) => {
-                const today = new Date()
-                const isToday = date.toDateString() === today.toDateString()
-                const dayStart = startOfLocalDay(date)
-                const dayEvents = eventsOnLocalDay(events, date)
+                const dayParts = getZonedTimeParts(date, calendarTZ)
+                const viewParts = getZonedTimeParts(currentDate, calendarTZ)
+                const isToday =
+                  dayStartInCal(date).getTime() ===
+                  dayStartInCal(new Date()).getTime()
+                const dayStart = dayStartInCal(date)
+                const dayEvents = eventsOnLocalDay(events, date, calendarTZ)
                 let violationLeft = 0
                 const violatedDuty = dayEvents.find(
                   (e) => e.violated && e.type === 'duty',
@@ -1347,7 +1835,7 @@ function Calendar() {
                 return (
                   <div
                     key={date.toISOString()}
-                    className={`day ${getDayStatus(date)} ${date.getMonth() !== currentDate.getMonth() ? 'other-month' : ''} ${selectedDate && selectedDate.toDateString() === date.toDateString() ? 'selected' : ''} ${isInRange(date) ? 'in-range' : ''} ${isToday ? 'today' : ''}`}
+                    className={`day ${getDayStatus(date)} ${dayParts.month !== viewParts.month || dayParts.year !== viewParts.year ? 'other-month' : ''} ${selectedDate && dayStartInCal(selectedDate).getTime() === dayStart.getTime() ? 'selected' : ''} ${isInRange(date) ? 'in-range' : ''} ${isToday ? 'today' : ''}`}
                     onMouseDown={() => handleMouseDown(date)}
                     onMouseUp={handleMouseUp}
                     onMouseLeave={handleMouseUp}
@@ -1355,13 +1843,12 @@ function Calendar() {
                     onTouchEnd={handleMouseUp}
                     onClick={() => handleClick(date)}
                   >
-                    <span className="day-number">{date.getDate()}</span>
+                    <span className="day-number">{dayParts.day}</span>
                     {renderEventBars(date)}
                     {(dayEvents.some((e) => e.violated) ||
                       report70029.violations.some((v) => {
-                        const ds = startOfLocalDay(date)
-                        const de = new Date(ds)
-                        de.setDate(de.getDate() + 1)
+                        const ds = dayStartInCal(date)
+                        const de = dayEndInCal(date)
                         return v.windowEnd >= ds && v.windowEnd < de
                       })) && (
                       <div
@@ -1369,9 +1856,8 @@ function Calendar() {
                         style={{ left: `${violationLeft}%`, bottom: '2px' }}
                         onClick={(e) => {
                           e.stopPropagation()
-                          const dayStart = startOfLocalDay(date)
-                          const dayEnd = new Date(dayStart)
-                          dayEnd.setDate(dayEnd.getDate() + 1)
+                          const dayStart = dayStartInCal(date)
+                          const dayEnd = dayEndInCal(date)
                           const v700 = report70029.violations.find(
                             (v) =>
                               v.windowEnd >= dayStart && v.windowEnd < dayEnd,
@@ -1421,7 +1907,7 @@ function Calendar() {
                     (e) =>
                       e.start.toDateString() === selectedDate.toDateString() ||
                       (e.start < selectedDate &&
-                        e.end > startOfLocalDay(selectedDate)),
+                        e.end > dayStartInCal(selectedDate)),
                   )
                   .map((e) => e.title)
                   .join(', ') || 'None'}
@@ -1543,13 +2029,13 @@ function Calendar() {
                 Start Date:
                 <input
                   type="date"
-                  value={toLocalDateInputValue(addDutyDate)}
+                  value={toDateInputValueInTZ(addDutyDate, calendarTZ)}
                   onChange={(e) => applyStartDateChange(e.target.value)}
                   aria-label="Start date"
                 />
               </label>
               <label>
-                Start Time:
+                Start Time (report, start location TZ):
                 <FreeTimeInput
                   value={startTime}
                   onChange={setStartTime}
@@ -1558,8 +2044,14 @@ function Calendar() {
                 />
                 {startTime && (
                   <span className="time-display">
-                    Local: {formatTimeDisplay(startTime, timeFormat)} | Zulu:{' '}
-                    {getZuluTimeDisplay(startTime, addDutyDate, timeFormat)}
+                    Wall ({(modalStartTZ || modalAcclTZ || acclTZ).replace(/_/g, ' ')}
+                    ): {formatTimeDisplay(startTime, timeFormat)} | Zulu:{' '}
+                    {getZuluTimeDisplay(
+                      startTime,
+                      addDutyDate,
+                      timeFormat,
+                      modalStartTZ || modalAcclTZ || acclTZ,
+                    )}
                   </span>
                 )}
               </label>
@@ -1594,20 +2086,22 @@ function Calendar() {
                 )}
               </label>
               <label>
-                End Time:
+                End Time (release, end location TZ):
                 <FreeTimeInput
                   value={endTime}
                   onChange={setEndTime}
                   timeFormat={timeFormat}
                   aria-label="End time"
                 />
-                {endTime && (
+                {endTime && endDate && (
                   <span className="time-display">
-                    Local: {formatTimeDisplay(endTime, timeFormat)} | Zulu:{' '}
+                    Wall ({(modalEndTZ || modalAcclTZ || acclTZ).replace(/_/g, ' ')}
+                    ): {formatTimeDisplay(endTime, timeFormat)} | Zulu:{' '}
                     {getZuluTimeDisplay(
                       endTime,
-                      endDate ? parseLocalDateTime(endDate, '00:00') : null,
+                      startOfDayKeyInTimeZone(endDate, calendarTZ),
                       timeFormat,
+                      modalEndTZ || modalAcclTZ || acclTZ,
                     )}
                   </span>
                 )}
@@ -1690,7 +2184,9 @@ function Calendar() {
                 type="button"
                 onClick={() => {
                   if (!startTime || !addDutyDate) return
-                  const start = combineLocalDateAndTime(addDutyDate, startTime)
+                  const sTz = modalStartTZ || modalAcclTZ || acclTZ
+                  const startYmd = toDateInputValueInTZ(addDutyDate, calendarTZ)
+                  const start = parseZonedDateTime(startYmd, startTime, sTz)
                   const hour = getHourInTZ(start, modalAcclTZ || acclTZ)
                   const max = getMaxFdpHours(
                     regulator,
@@ -1764,6 +2260,10 @@ function Calendar() {
                 if (bin.length === 0) return
 
                 setEvents((prev) => mergeRestoredEvents(prev, bin))
+                clearDeletedEvents()
+                setDeletedEventCount(0)
+              }}
+              onPurgeDeletedEvents={() => {
                 clearDeletedEvents()
                 setDeletedEventCount(0)
               }}

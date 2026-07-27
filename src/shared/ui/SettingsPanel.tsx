@@ -1,5 +1,11 @@
 import { useState } from 'react'
-import type { Regulator, TimeFormat, TimeFreeOption } from '../../domain/types'
+import { createPortal } from 'react-dom'
+import type {
+  CalendarTimeReference,
+  Regulator,
+  TimeFormat,
+  TimeFreeOption,
+} from '../../domain/types'
 import { useSettings } from '../../features/settings/SettingsContext'
 import TimeZoneSelector from './TimeZoneSelector'
 import './SettingsPanel.css'
@@ -11,9 +17,11 @@ interface SettingsPanelProps {
   /** When provided, shows calendar data delete/restore controls. */
   onDeleteEvents?: (scope: DeleteEventsScope) => void
   onRestoreDeletedEvents?: () => void
+  /** Permanently wipe soft-deleted events from storage (cannot restore). */
+  onPurgeDeletedEvents?: () => void
   /** Label for the current month, e.g. "March 2026". */
   deleteMonthLabel?: string
-  /** Number of events in soft-delete storage (enables restore). */
+  /** Number of events in soft-delete storage (enables restore / purge). */
   deletedEventCount?: number
 }
 
@@ -21,6 +29,7 @@ export default function SettingsPanel({
   onClose,
   onDeleteEvents,
   onRestoreDeletedEvents,
+  onPurgeDeletedEvents,
   deleteMonthLabel,
   deletedEventCount = 0,
 }: SettingsPanelProps) {
@@ -35,10 +44,17 @@ export default function SettingsPanel({
     setAcclTZ,
     timeFreeOption,
     setTimeFreeOption,
+    calendarTimeRef,
+    setCalendarTimeRef,
+    calendarDisplayTZ,
+    setCalendarDisplayTZ,
+    resolvedCalendarTZ,
   } = useSettings()
 
   const [showDeleteOptions, setShowDeleteOptions] = useState(false)
+  const [showPurgeConfirm, setShowPurgeConfirm] = useState(false)
   const canRestore = deletedEventCount > 0 && Boolean(onRestoreDeletedEvents)
+  const canPurge = deletedEventCount > 0 && Boolean(onPurgeDeletedEvents)
   const showCalendarData = Boolean(onDeleteEvents)
 
   const handleDelete = (scope: DeleteEventsScope) => {
@@ -70,6 +86,17 @@ export default function SettingsPanel({
       return
     }
     onRestoreDeletedEvents()
+  }
+
+  const openPurgeConfirm = () => {
+    if (!canPurge) return
+    setShowPurgeConfirm(true)
+  }
+
+  const confirmPurgeDeleted = () => {
+    if (!onPurgeDeletedEvents) return
+    onPurgeDeletedEvents()
+    setShowPurgeConfirm(false)
   }
 
   return (
@@ -129,6 +156,42 @@ export default function SettingsPanel({
       <p className="settings-section-hint">
         Option D requires 120 consecutive hours free including five consecutive
         local nights before exceeding 60 h work in 7 days.
+      </p>
+
+      <label>
+        Calendar time reference
+        <select
+          value={calendarTimeRef}
+          onChange={(e) =>
+            setCalendarTimeRef(e.target.value as CalendarTimeReference)
+          }
+        >
+          <option value="zulu">Zulu (UTC)</option>
+          <option value="device">Current local (device)</option>
+          <option value="home">Home base</option>
+          <option value="custom">Specific time zone…</option>
+        </select>
+      </label>
+      {calendarTimeRef === 'custom' && (
+        <label>
+          Calendar time zone
+          <TimeZoneSelector
+            value={calendarDisplayTZ}
+            onChange={setCalendarDisplayTZ}
+          />
+        </label>
+      )}
+      <p className="settings-section-hint">
+        Day cells and event bars use this zone. Active:{' '}
+        <strong>{resolvedCalendarTZ.replace(/_/g, ' ')}</strong>
+        {calendarTimeRef === 'device'
+          ? ' (device)'
+          : calendarTimeRef === 'home'
+            ? ' (home base)'
+            : calendarTimeRef === 'zulu'
+              ? ' (Zulu)'
+              : ''}
+        .
       </p>
 
       {showCalendarData && (
@@ -192,12 +255,78 @@ export default function SettingsPanel({
             Restore deleted events
             {canRestore ? ` (${deletedEventCount})` : ''}
           </button>
+
+          <button
+            type="button"
+            className="settings-purge-button"
+            disabled={!canPurge}
+            aria-disabled={!canPurge}
+            title={
+              canPurge
+                ? `Permanently remove ${deletedEventCount} deleted event${deletedEventCount === 1 ? '' : 's'} from storage`
+                : 'No deleted events in storage'
+            }
+            onClick={openPurgeConfirm}
+          >
+            Permanently erase deleted events
+            {canPurge ? ` (${deletedEventCount})` : ''}
+          </button>
         </section>
       )}
 
       <button type="button" className="settings-close-button" onClick={onClose}>
         Close
       </button>
+
+      {/* Portal to body: slide-menu overflow/stacking would clip and blur a nested overlay */}
+      {showPurgeConfirm &&
+        createPortal(
+          <div
+            className="settings-confirm-overlay"
+            role="presentation"
+            onClick={() => setShowPurgeConfirm(false)}
+          >
+            <div
+              className="settings-confirm-dialog"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="settings-purge-title"
+              aria-describedby="settings-purge-desc"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h4 id="settings-purge-title" className="settings-confirm-title">
+                Erase deleted events?
+              </h4>
+              <p id="settings-purge-desc" className="settings-confirm-body">
+                Permanently remove{' '}
+                <strong>
+                  {deletedEventCount} deleted event
+                  {deletedEventCount === 1 ? '' : 's'}
+                </strong>{' '}
+                from this device. This frees storage and{' '}
+                <strong>cannot be undone</strong> — restore will no longer be
+                available for these events.
+              </p>
+              <div className="settings-confirm-actions">
+                <button
+                  type="button"
+                  className="settings-confirm-cancel"
+                  onClick={() => setShowPurgeConfirm(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="settings-confirm-danger"
+                  onClick={confirmPurgeDeleted}
+                >
+                  Erase permanently
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

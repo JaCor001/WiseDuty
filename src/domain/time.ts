@@ -285,6 +285,78 @@ export function parseLocalDateTime(dateYmd: string, timeHHmm: string): Date {
   return new Date(y, (mo || 1) - 1, d || 1, h || 0, m || 0, 0, 0)
 }
 
+/**
+ * Parse YYYY-MM-DD + HH:mm as wall clock in IANA zone `tz` → absolute instant.
+ * Falls back to browser-local parse when `tz` is empty.
+ */
+export function parseZonedDateTime(
+  dateYmd: string,
+  timeHHmm: string,
+  tz?: string | null,
+): Date {
+  if (!tz) return parseLocalDateTime(dateYmd, timeHHmm)
+  const [y, mo, d] = dateYmd.split('-').map(Number)
+  const [h, m] = timeHHmm.split(':').map(Number)
+  return zonedWallTime(
+    tz,
+    y || 1970,
+    mo || 1,
+    d || 1,
+    h || 0,
+    m || 0,
+  )
+}
+
+/** HH:mm wall clock of `date` in IANA zone `tz`. */
+export function formatHHmmInTZ(date: Date, tz: string): string {
+  const p = getZonedTimeParts(date, tz)
+  return `${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`
+}
+
+/** YYYY-MM-DD civil date of `date` in IANA zone `tz`. */
+export function toDateInputValueInTZ(date: Date, tz: string): string {
+  return getZonedTimeParts(date, tz).dayKey
+}
+
+/** Start of civil day (00:00) in `tz` that contains `date` (as absolute instant). */
+export function startOfDayInTimeZone(date: Date, tz: string): Date {
+  const p = getZonedTimeParts(date, tz)
+  return zonedWallTime(tz, p.year, p.month, p.day, 0, 0)
+}
+
+/** Start of civil day for a YYYY-MM-DD key in `tz`. */
+export function startOfDayKeyInTimeZone(dayKey: string, tz: string): Date {
+  const [y, mo, d] = dayKey.split('-').map(Number)
+  return zonedWallTime(tz, y || 1970, mo || 1, d || 1, 0, 0)
+}
+
+/** Add civil days in `tz` to a day-start instant (or any instant → its civil day). */
+export function addCivilDaysInTimeZone(
+  date: Date,
+  tz: string,
+  days: number,
+): Date {
+  const p = getZonedTimeParts(date, tz)
+  const shifted = new Date(Date.UTC(p.year, p.month - 1, p.day + days))
+  return zonedWallTime(
+    tz,
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth() + 1,
+    shifted.getUTCDate(),
+    0,
+    0,
+  )
+}
+
+/** Device IANA time zone (fallback UTC). */
+export function deviceTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  } catch {
+    return 'UTC'
+  }
+}
+
 export function formatTimeDisplay(
   timeHHmm: string,
   timeFormat: '24h' | '12h',
@@ -400,16 +472,24 @@ export function timeInputPlaceholder(timeFormat: '24h' | '12h'): string {
     : 'e.g. 2030 or 20:30'
 }
 
-/** True Zulu (UTC) display for a local day + HH:mm. */
+/**
+ * Zulu (UTC) display for a civil day + HH:mm interpreted in `sourceTZ`
+ * (empty/null → browser local).
+ */
 export function getZuluTimeDisplay(
   timeHHmm: string,
   day: Date | null,
   timeFormat: '24h' | '12h',
+  sourceTZ?: string | null,
 ): string {
   if (!timeHHmm || !day || isNaN(day.getTime())) return ''
-  const local = combineLocalDateAndTime(day, timeHHmm)
-  const utcH = local.getUTCHours()
-  const utcM = local.getUTCMinutes()
+  const dayKey = sourceTZ
+    ? toDateInputValueInTZ(day, sourceTZ)
+    : toLocalDateInputValue(day)
+  const instant = parseZonedDateTime(dayKey, timeHHmm, sourceTZ || undefined)
+  if (isNaN(instant.getTime())) return ''
+  const utcH = instant.getUTCHours()
+  const utcM = instant.getUTCMinutes()
   const hhmm = `${String(utcH).padStart(2, '0')}:${String(utcM).padStart(2, '0')}`
   return formatTimeDisplay(hhmm, timeFormat)
 }
@@ -474,8 +554,9 @@ export function localTimeOfDayHours(date: Date): number {
 }
 
 /**
- * Position a bar within a local calendar day.
- * Returns left/width as percentages of the day cell.
+ * Position a bar within a calendar day cell.
+ * `dayStart`/`dayEnd` are absolute instants (civil day bounds in the display TZ).
+ * Uses elapsed time so DST days and non-browser time zones position correctly.
  */
 export function dayBarPosition(
   eventStart: Date,
@@ -483,31 +564,15 @@ export function dayBarPosition(
   dayStart: Date,
   dayEnd: Date,
 ): { left: number; width: number } {
-  const isStart = eventStart >= dayStart && eventStart < dayEnd
-  const isEnd = eventEnd > dayStart && eventEnd <= dayEnd
-  let left = 0
-  let width = 100
+  const dayMs = dayEnd.getTime() - dayStart.getTime()
+  if (dayMs <= 0) return { left: 0, width: 0 }
 
-  if (isStart && !isEnd) {
-    left = (localTimeOfDayHours(eventStart) / 24) * 100
-    width = 100 - left
-  } else if (isEnd && !isStart) {
-    const endHours =
-      eventEnd.getTime() === dayStart.getTime()
-        ? 0
-        : eventEnd.getTime() === dayEnd.getTime()
-          ? 24
-          : localTimeOfDayHours(eventEnd) || 24
-    width = (endHours / 24) * 100
-  } else if (isStart && isEnd) {
-    const startH = localTimeOfDayHours(eventStart)
-    let endH = localTimeOfDayHours(eventEnd)
-    if (eventEnd.getTime() === dayEnd.getTime()) endH = 24
-    if (endH === 0 && eventEnd > eventStart) endH = 24
-    left = (startH / 24) * 100
-    width = ((endH - startH) / 24) * 100
-  }
+  const clipStart = Math.max(eventStart.getTime(), dayStart.getTime())
+  const clipEnd = Math.min(eventEnd.getTime(), dayEnd.getTime())
+  if (clipEnd <= clipStart) return { left: 0, width: 0 }
 
+  const left = ((clipStart - dayStart.getTime()) / dayMs) * 100
+  const width = ((clipEnd - clipStart) / dayMs) * 100
   return {
     left: Math.max(0, Math.min(100, left)),
     width: Math.max(0, Math.min(100 - left, width)),

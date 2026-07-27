@@ -37,10 +37,20 @@ body.light {
   --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.08);
   --hover-shadow: var(--shadow-md);
 
+  /*
+   * Radius scale (use tokens only — no ad-hoc px in components):
+   *   xs  thin bars / tiny ends
+   *   sm  default controls, day cells, markers, inputs
+   *   md  cards, panels, dropdowns
+   *   lg  modals, large sheets
+   *   pill full pills / circular badges
+   */
+  --radius-xs: 4px;
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-pill: 999px;
+  --radius: var(--radius-sm);
 
   --page-max: 1120px;
   --page-pad: clamp(1rem, 3vw, 1.75rem);
@@ -774,7 +784,7 @@ body.dark .auth-card {
   justify-content: center;
   width: 28px;
   height: 28px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--card-bg);
   border: 1px solid var(--border-color);
   box-shadow: none;

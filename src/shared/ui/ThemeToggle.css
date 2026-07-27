@@ -7,7 +7,7 @@
   padding: 0;
   margin: 0;
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-pill, 999px);
+  border-radius: var(--radius-pill);
   background: var(--bg-secondary);
   cursor: pointer;
   color: var(--text-secondary);
@@ -107,7 +107,7 @@
   height: 1.85rem !important;
   min-width: 3.35rem !important;
   padding: 0 !important;
-  border-radius: 999px !important;
+  border-radius: var(--radius-pill) !important;
   opacity: 0.92;
 }
 

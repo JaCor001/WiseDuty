@@ -9,11 +9,13 @@ import {
 } from 'react'
 import type {
   AvgSectorTime,
+  CalendarTimeReference,
   Regulator,
   TimeFormat,
   TimeFreeOption,
 } from '../../domain/types'
 import { STORAGE_KEYS } from '../../domain/types'
+import { deviceTimeZone } from '../../domain/time'
 import { readString, writeString } from '../../shared/storage'
 
 interface SettingsContextValue {
@@ -34,16 +36,42 @@ interface SettingsContextValue {
   setAvgSectorTime: (value: AvgSectorTime) => void
   timeFreeOption: TimeFreeOption
   setTimeFreeOption: (value: TimeFreeOption) => void
+  calendarTimeRef: CalendarTimeReference
+  setCalendarTimeRef: (value: CalendarTimeReference) => void
+  calendarDisplayTZ: string
+  setCalendarDisplayTZ: (value: string) => void
+  /** Resolved IANA zone for calendar day cells / bars. */
+  resolvedCalendarTZ: string
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null)
 
 function defaultTimeZone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone
-  } catch {
-    return 'America/Vancouver'
+  const tz = deviceTimeZone()
+  return tz || 'America/Vancouver'
+}
+
+function parseCalendarTimeRef(raw: string): CalendarTimeReference {
+  if (
+    raw === 'zulu' ||
+    raw === 'device' ||
+    raw === 'home' ||
+    raw === 'custom'
+  ) {
+    return raw
   }
+  return 'device'
+}
+
+export function resolveCalendarTimeZone(
+  mode: CalendarTimeReference,
+  homeBaseTZ: string,
+  customTZ: string,
+): string {
+  if (mode === 'zulu') return 'UTC'
+  if (mode === 'home') return homeBaseTZ || deviceTimeZone()
+  if (mode === 'custom') return customTZ || homeBaseTZ || deviceTimeZone()
+  return deviceTimeZone()
 }
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
@@ -77,6 +105,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       const v = readString(STORAGE_KEYS.timeFreeOption, 'auto') as TimeFreeOption
       return v === 'C' || v === 'D' || v === 'auto' ? v : 'auto'
     },
+  )
+  const [calendarTimeRef, setCalendarTimeRefState] =
+    useState<CalendarTimeReference>(() =>
+      parseCalendarTimeRef(readString(STORAGE_KEYS.calendarTimeRef, 'device')),
+    )
+  const [calendarDisplayTZ, setCalendarDisplayTZState] = useState(() =>
+    readString(STORAGE_KEYS.calendarDisplayTZ, defaultTimeZone()),
   )
 
   useEffect(() => {
@@ -131,6 +166,26 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     writeString(STORAGE_KEYS.timeFreeOption, value)
   }, [])
 
+  const setCalendarTimeRef = useCallback((value: CalendarTimeReference) => {
+    setCalendarTimeRefState(value)
+    writeString(STORAGE_KEYS.calendarTimeRef, value)
+  }, [])
+
+  const setCalendarDisplayTZ = useCallback((value: string) => {
+    setCalendarDisplayTZState(value)
+    writeString(STORAGE_KEYS.calendarDisplayTZ, value)
+  }, [])
+
+  const resolvedCalendarTZ = useMemo(
+    () =>
+      resolveCalendarTimeZone(
+        calendarTimeRef,
+        referenceTZ,
+        calendarDisplayTZ,
+      ),
+    [calendarTimeRef, referenceTZ, calendarDisplayTZ],
+  )
+
   const value = useMemo(
     () => ({
       darkMode,
@@ -150,6 +205,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setAvgSectorTime,
       timeFreeOption,
       setTimeFreeOption,
+      calendarTimeRef,
+      setCalendarTimeRef,
+      calendarDisplayTZ,
+      setCalendarDisplayTZ,
+      resolvedCalendarTZ,
     }),
     [
       darkMode,
@@ -169,6 +229,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setAvgSectorTime,
       timeFreeOption,
       setTimeFreeOption,
+      calendarTimeRef,
+      setCalendarTimeRef,
+      calendarDisplayTZ,
+      setCalendarDisplayTZ,
+      resolvedCalendarTZ,
     ],
   )
 

@@ -5,6 +5,10 @@ import type {
   StoredDutyEvent,
 } from './types'
 import {
+  addCivilDaysInTimeZone,
+  startOfDayInTimeZone,
+} from './time'
+import {
   computeLocalNightRest,
   dutyHasEarlyMarker,
   dutyHasLateMarker,
@@ -120,10 +124,19 @@ export function findDutyOnDate(
 export function eventsOnLocalDay(
   events: DutyEvent[],
   date: Date,
+  /** When set, day bounds use this IANA zone instead of browser local. */
+  displayTZ?: string,
 ): DutyEvent[] {
-  const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-  const dayEnd = new Date(dayStart)
-  dayEnd.setDate(dayEnd.getDate() + 1)
+  let dayStart: Date
+  let dayEnd: Date
+  if (displayTZ) {
+    dayStart = startOfDayInTimeZone(date, displayTZ)
+    dayEnd = addCivilDaysInTimeZone(dayStart, displayTZ, 1)
+  } else {
+    dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+    dayEnd = new Date(dayStart)
+    dayEnd.setDate(dayEnd.getDate() + 1)
+  }
   return events.filter((e) => e.start < dayEnd && e.end > dayStart)
 }
 
