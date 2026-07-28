@@ -81,6 +81,16 @@ function describeDutyLine(
     `  duration_h=${dur.toFixed(2)} acclTZ=${accl} startTZ=${startTZ} endTZ=${endTZ} home=${homeBaseTZ}`,
     `  ELN=${eln} (E=${early} L=${late} N=${night}) WOCL=${wocl} trailingWoclCount=${trailWocl}`,
   ]
+  if (e.operatingSectors != null || e.positioningSectors != null) {
+    lines.push(
+      `  operatingSectors=${e.operatingSectors ?? '—'} positioningSectors=${e.positioningSectors ?? '—'} avgSector=${e.avgSectorTime ?? '—'}`,
+    )
+  }
+  if (e.endsWithPositioning) {
+    lines.push(
+      `  endsWithPositioning=true operatingEnd=${e.operatingEnd ? fmtWall(e.operatingEnd, endTZ) : '—'} agreed=${!!e.positioningAgreed}`,
+    )
+  }
   if (e.violated) lines.push(`  violated=true`)
   return lines
 }

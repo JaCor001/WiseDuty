@@ -6,6 +6,60 @@ export type RestType = '12h' | '10+travel'
 /** CAR 700.29 time-free-from-duty option. */
 export type TimeFreeOption = 'C' | 'D' | 'auto'
 
+/** Airport row used by search / flight legs. */
+export interface AirportRef {
+  icao: string
+  iata?: string
+  name: string
+  city?: string
+  country?: string
+  tz: string
+}
+
+/** One sector / leg inside an FDP (source of truth when present). */
+export interface FlightLeg {
+  id: string
+  depIcao: string
+  arrIcao: string
+  dep: Date
+  arr: Date
+  isDeadhead: boolean
+  /** Affects report buffer when this is the first leg. */
+  customsPreclearance?: boolean
+}
+
+export interface StoredFlightLeg {
+  id: string
+  depIcao: string
+  arrIcao: string
+  dep: string
+  arr: string
+  isDeadhead: boolean
+  customsPreclearance?: boolean
+}
+
+/**
+ * Minutes before first dep / after last arr for auto report & release.
+ * Configured in Settings.
+ */
+export interface DutyTimingBuffers {
+  reportOperatingMin: number
+  reportOperatingCustomsMin: number
+  reportDeadheadMin: number
+  reportDeadheadCustomsMin: number
+  releaseOperatingMin: number
+  releaseDeadheadMin: number
+}
+
+export const DEFAULT_DUTY_TIMING_BUFFERS: DutyTimingBuffers = {
+  reportOperatingMin: 60,
+  reportOperatingCustomsMin: 90,
+  reportDeadheadMin: 45,
+  reportDeadheadCustomsMin: 75,
+  releaseOperatingMin: 15,
+  releaseDeadheadMin: 15,
+}
+
 /** Regulatory rest classification for markers / alerts. */
 export type RestRuleCode =
   | 'CAR 700.40'
@@ -14,6 +68,7 @@ export type RestRuleCode =
   | 'CAR 700.42(2)'
   | 'CAR 700.51'
   | 'CAR 700.29'
+  | 'CAR 700.43'
 
 export type RestKind =
   | 'base'
@@ -24,6 +79,7 @@ export type RestKind =
   | 'wocl_consecutive'
   | 'sdf_structure'
   | 'free_block'
+  | 'positioning'
 
 export interface DutyEvent {
   id: string
@@ -60,6 +116,35 @@ export interface DutyEvent {
   workFactor?: number
   /** Auto-scheduled free block purpose. */
   freePurpose?: 'sdf' | 'five_lnr_block' | 'manual'
+  /**
+   * Operating sectors for CAR 700.28 table (excludes positioning / deadhead).
+   * Stored per duty so rest recompute does not depend on later settings changes.
+   */
+  operatingSectors?: number
+  /** Positioning / deadhead sectors (not counted in 700.28 table columns). */
+  positioningSectors?: number
+  /** Avg sector band used for max FDP at save time. */
+  avgSectorTime?: AvgSectorTime
+  /**
+   * Duty ends with operator positioning after the last operating flight
+   * (trailing deadhead). Enables CAR 700.43 when total duty exceeds max FDP.
+   */
+  endsWithPositioning?: boolean
+  /**
+   * Engines-off / end of last operating flight (start of post-FDP positioning).
+   * Required for 700.43 when endsWithPositioning is true.
+   */
+  operatingEnd?: Date
+  /**
+   * Crew agreed to positioning that exceeds max FDP by more than 3 h (700.43(3)).
+   */
+  positioningAgreed?: boolean
+  /** Flight legs (source of truth for flight-based FDP entry). */
+  flights?: FlightLeg[]
+  /** User overrode auto report (first dep − buffer). */
+  reportOverridden?: boolean
+  /** User overrode auto release (last arr + buffer). */
+  releaseOverridden?: boolean
 }
 
 /** Serializable form stored in localStorage */
@@ -82,6 +167,15 @@ export interface StoredDutyEvent {
   baseRestType?: RestType
   workFactor?: number
   freePurpose?: 'sdf' | 'five_lnr_block' | 'manual'
+  operatingSectors?: number
+  positioningSectors?: number
+  avgSectorTime?: AvgSectorTime
+  endsWithPositioning?: boolean
+  operatingEnd?: string
+  positioningAgreed?: boolean
+  flights?: StoredFlightLeg[]
+  reportOverridden?: boolean
+  releaseOverridden?: boolean
 }
 
 /**
@@ -107,6 +201,7 @@ export interface AppSettings {
   calendarTimeRef: CalendarTimeReference
   /** IANA zone when calendarTimeRef === 'custom'. */
   calendarDisplayTZ: string
+  dutyTimingBuffers: DutyTimingBuffers
 }
 
 export const STORAGE_KEYS = {
@@ -123,6 +218,7 @@ export const STORAGE_KEYS = {
   timeFreeOption: 'timeFreeOption',
   calendarTimeRef: 'calendarTimeRef',
   calendarDisplayTZ: 'calendarDisplayTZ',
+  dutyTimingBuffers: 'dutyTimingBuffers',
 } as const
 
 export const MAX_WEEKLY_DUTY_HOURS = 60

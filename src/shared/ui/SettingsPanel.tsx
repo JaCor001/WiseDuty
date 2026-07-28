@@ -49,6 +49,8 @@ export default function SettingsPanel({
     calendarDisplayTZ,
     setCalendarDisplayTZ,
     resolvedCalendarTZ,
+    dutyTimingBuffers,
+    setDutyTimingBuffers,
   } = useSettings()
 
   const [showDeleteOptions, setShowDeleteOptions] = useState(false)
@@ -193,6 +195,108 @@ export default function SettingsPanel({
               : ''}
         .
       </p>
+
+      <h4 className="settings-section-title">Report & release buffers</h4>
+      <p className="settings-section-hint">
+        Auto report = first departure minus these minutes. Auto release = last
+        arrival plus these minutes. You can still override times on each duty.
+      </p>
+      <label>
+        Report · operating (min before dep)
+        <input
+          type="number"
+          min={0}
+          max={240}
+          value={dutyTimingBuffers.reportOperatingMin}
+          onChange={(e) =>
+            setDutyTimingBuffers({
+              ...dutyTimingBuffers,
+              reportOperatingMin: Math.max(0, Number(e.target.value) || 0),
+            })
+          }
+        />
+      </label>
+      <label>
+        Report · operating + customs (min)
+        <input
+          type="number"
+          min={0}
+          max={240}
+          value={dutyTimingBuffers.reportOperatingCustomsMin}
+          onChange={(e) =>
+            setDutyTimingBuffers({
+              ...dutyTimingBuffers,
+              reportOperatingCustomsMin: Math.max(
+                0,
+                Number(e.target.value) || 0,
+              ),
+            })
+          }
+        />
+      </label>
+      <label>
+        Report · deadhead (min)
+        <input
+          type="number"
+          min={0}
+          max={240}
+          value={dutyTimingBuffers.reportDeadheadMin}
+          onChange={(e) =>
+            setDutyTimingBuffers({
+              ...dutyTimingBuffers,
+              reportDeadheadMin: Math.max(0, Number(e.target.value) || 0),
+            })
+          }
+        />
+      </label>
+      <label>
+        Report · deadhead + customs (min)
+        <input
+          type="number"
+          min={0}
+          max={240}
+          value={dutyTimingBuffers.reportDeadheadCustomsMin}
+          onChange={(e) =>
+            setDutyTimingBuffers({
+              ...dutyTimingBuffers,
+              reportDeadheadCustomsMin: Math.max(
+                0,
+                Number(e.target.value) || 0,
+              ),
+            })
+          }
+        />
+      </label>
+      <label>
+        Release · after operating (min after arr)
+        <input
+          type="number"
+          min={0}
+          max={120}
+          value={dutyTimingBuffers.releaseOperatingMin}
+          onChange={(e) =>
+            setDutyTimingBuffers({
+              ...dutyTimingBuffers,
+              releaseOperatingMin: Math.max(0, Number(e.target.value) || 0),
+            })
+          }
+        />
+      </label>
+      <label>
+        Release · after deadhead (min after arr)
+        <input
+          type="number"
+          min={0}
+          max={120}
+          value={dutyTimingBuffers.releaseDeadheadMin}
+          onChange={(e) =>
+            setDutyTimingBuffers({
+              ...dutyTimingBuffers,
+              releaseDeadheadMin: Math.max(0, Number(e.target.value) || 0),
+            })
+          }
+        />
+      </label>
 
       {showCalendarData && (
         <section className="settings-danger-zone" aria-label="Calendar data">

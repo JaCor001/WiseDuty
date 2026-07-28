@@ -54,7 +54,12 @@ import {
   getMaxFdpHours,
   wouldExceedWeeklyLimit,
 } from './domain/regulations'
+import {
+  assertPositioningAllowed,
+  computePositioningRestHours,
+} from './domain/rest-70043'
 import { CalendarDayCell } from './CalendarDayCell'
+import DutyForm from './DutyForm'
 import {
   evaluate70029,
   hasHard70029HourViolation,
@@ -109,6 +114,7 @@ function Calendar() {
     timeFreeOption,
     calendarTimeRef,
     resolvedCalendarTZ,
+    dutyTimingBuffers,
   } = useSettings()
 
   const homeBaseTZ = referenceTZ || acclTZ
@@ -181,6 +187,11 @@ function Calendar() {
   const [modalStartTZ, setModalStartTZ] = useState('')
   const [modalEndTZ, setModalEndTZ] = useState('')
   const [restType, setRestType] = useState<RestType>('12h')
+  const [positioningSectors, setPositioningSectors] = useState(0)
+  const [endsWithPositioning, setEndsWithPositioning] = useState(false)
+  const [operatingEndDate, setOperatingEndDate] = useState('')
+  const [operatingEndTime, setOperatingEndTime] = useState('')
+  const [positioningAgreed, setPositioningAgreed] = useState(false)
   const [isEdit, setIsEdit] = useState(false)
   const [editEvent, setEditEvent] = useState<DutyEvent | null>(null)
   const [animating, setAnimating] = useState(false)
@@ -191,6 +202,34 @@ function Calendar() {
   /** Re-key end-date input to re-run blink animation after auto overnight adjust. */
   const [endDateBlinkKey, setEndDateBlinkKey] = useState(0)
   const [endDateShouldBlink, setEndDateShouldBlink] = useState(false)
+
+  const resetPositioningForm = () => {
+    setPositioningSectors(0)
+    setEndsWithPositioning(false)
+    setOperatingEndDate('')
+    setOperatingEndTime('')
+    setPositioningAgreed(false)
+  }
+
+  const loadPositioningFormFromDuty = (duty: DutyEvent) => {
+    setPositioningSectors(duty.positioningSectors ?? 0)
+    setEndsWithPositioning(!!duty.endsWithPositioning)
+    setPositioningAgreed(!!duty.positioningAgreed)
+    if (duty.endsWithPositioning && duty.operatingEnd) {
+      const eTz = duty.endTZ || duty.acclTZ || acclTZ
+      setOperatingEndDate(toDateInputValueInTZ(duty.operatingEnd, eTz))
+      setOperatingEndTime(formatHHmmInTZ(duty.operatingEnd, eTz))
+    } else {
+      setOperatingEndDate('')
+      setOperatingEndTime('')
+    }
+    if (duty.operatingSectors != null && duty.operatingSectors >= 1) {
+      setSectors(duty.operatingSectors)
+    }
+    if (duty.avgSectorTime) {
+      setAvgSectorTime(duty.avgSectorTime)
+    }
+  }
 
   useEffect(() => {
     // Avoid rewriting localStorage on mount with an identical payload
@@ -751,6 +790,7 @@ function Calendar() {
         setModalAcclTZ(duty.acclTZ || acclTZ)
         setModalStartTZ(duty.startTZ || duty.acclTZ || acclTZ)
         setModalEndTZ(duty.endTZ || duty.acclTZ || acclTZ)
+        loadPositioningFormFromDuty(duty)
       }
     } else if (date.getMonth() !== currentDate.getMonth()) {
       setAnimating(true)
@@ -777,6 +817,7 @@ function Calendar() {
     setValidationMessage('')
     setMaxDutyResult('')
     setEndDateShouldBlink(false)
+    resetPositioningForm()
   }
 
   const handleAddDuty = () => {
@@ -800,6 +841,7 @@ function Calendar() {
     setModalAcclTZ(event.acclTZ || acclTZ)
     setModalStartTZ(event.startTZ || event.acclTZ || acclTZ)
     setModalEndTZ(event.endTZ || event.acclTZ || acclTZ)
+    loadPositioningFormFromDuty(event)
     const restEvent = events.find((e) => e.id === restIdForDuty(event.id))
     if (restEvent) {
       const restDuration = restEvent.requiredRestHours
@@ -843,46 +885,18 @@ function Calendar() {
     setValidationMessage('')
     setMaxDutyResult('')
     setEndDateShouldBlink(false)
+    resetPositioningForm()
   }
 
-  const handleSubmitDuty = () => {
+  const handleDutyFormSubmit = (payload: {
+    duty: Partial<DutyEvent> & { start: Date; end: Date }
+    restType: RestType
+  }) => {
     setValidationMessage('')
-    if (!addDutyDate || !startTime || !endTime || !endDate) {
-      setValidationMessage(
-        'Please fill in all required fields: Start Time, End Date, and End Time',
-      )
-      return
-    }
-
-    const dutyAccl = modalAcclTZ || acclTZ
-    const dutyStartLoc = modalStartTZ || dutyAccl
-    const dutyEndLoc = modalEndTZ || dutyAccl
-    // Date fields + times are wall clock in start/end location TZ (fallback accl / global)
-    const startYmd = toDateInputValueInTZ(addDutyDate, calendarTZ)
-    const start = parseZonedDateTime(startYmd, startTime, dutyStartLoc)
-    const end = parseZonedDateTime(endDate, endTime, dutyEndLoc)
-
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      setValidationMessage('Invalid date/time format. Please check your inputs.')
-      return
-    }
-    if (start >= end) {
-      setValidationMessage(
-        'End time must be after start time (check times and location time zones).',
-      )
-      return
-    }
-
-    const duration = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
-    const startHour = getHourInTZ(start, dutyAccl)
-    const maxDuty = getMaxFdpHours(regulator, startHour, sectors, avgSectorTime)
-
-    if (duration > maxDuty) {
-      setValidationMessage(
-        `FDP exceeds table limit for ${regulator === 'TC' ? 'CAR 705' : regulator}`,
-      )
-      return
-    }
+    const { duty: partial, restType: rt } = payload
+    const start = partial.start
+    const end = partial.end
+    const dutyAccl = partial.acclTZ || acclTZ
 
     if (
       wouldExceedWeeklyLimit(
@@ -898,17 +912,25 @@ function Calendar() {
       return
     }
 
-    // Preview 700.29 Option C on the schedule that would result after this save
     if (regulator === 'TC') {
       const previewDuty: DutyEvent = {
         id: isEdit && editEvent ? editEvent.id : 'preview-duty',
         title: 'Duty Period',
+        type: 'duty',
         start,
         end,
-        type: 'duty',
         acclTZ: dutyAccl,
-        startTZ: dutyStartLoc,
-        endTZ: dutyEndLoc,
+        startTZ: partial.startTZ,
+        endTZ: partial.endTZ,
+        flights: partial.flights,
+        operatingSectors: partial.operatingSectors,
+        positioningSectors: partial.positioningSectors,
+        avgSectorTime: partial.avgSectorTime,
+        endsWithPositioning: partial.endsWithPositioning,
+        operatingEnd: partial.operatingEnd,
+        positioningAgreed: partial.positioningAgreed,
+        reportOverridden: partial.reportOverridden,
+        releaseOverridden: partial.releaseOverridden,
       }
       const base = events.filter(
         (e) =>
@@ -934,7 +956,6 @@ function Calendar() {
         )
         return
       }
-      // Soft: missing SDF — allow save but alert + offer free-time suggest
       if (hasSoft70029SdfWarning(previewReport)) {
         const soft = previewReport.violations
           .filter(
@@ -953,15 +974,14 @@ function Calendar() {
     if (isEdit && editEvent) {
       const updatedDuty: DutyEvent = {
         ...editEvent,
+        ...partial,
+        id: editEvent.id,
+        title: editEvent.title || 'Duty Period',
+        type: 'duty',
         start,
         end,
         acclTZ: dutyAccl,
-        startTZ: dutyStartLoc,
-        endTZ: dutyEndLoc,
-        title: editEvent.title || 'Duty Period',
-        type: 'duty',
       }
-
       setEvents((prev) => {
         const without = prev.filter(
           (e) => e.id !== editEvent.id && e.id !== restIdForDuty(editEvent.id),
@@ -972,38 +992,29 @@ function Calendar() {
           regulator,
           homeBaseTZ,
           dutyAccl,
-          restType,
+          rt,
         )
         const lnrMsg = summarizeViolatedLnrs(next)
         if (lnrMsg) alert(lnrMsg)
         return next
       })
-
-      // Validate 10+travel before closing; form stays open if release already passed
-      if (restType === '10+travel') {
+      if (rt === '10+travel') {
         const result = scheduleTravelRestReminders(end)
         if (!result.ok) {
-          if ((result.hoursSinceRelease ?? 0) > 15) {
-            setValidationMessage(
-              'More than 15 hours have passed since the release time. Please update the release time to reflect the actual time at the rest location.',
-            )
-          } else {
-            setValidationMessage(
-              'The release time has already passed. Please modify the end time of the duty to reflect the actual release time.',
-            )
-          }
+          setValidationMessage(
+            (result.hoursSinceRelease ?? 0) > 15
+              ? 'More than 15 hours have passed since the release time. Please update the release time to reflect the actual time at the rest location.'
+              : 'The release time has already passed. Please modify the release time of the duty.',
+          )
           return
         }
       }
-
       resetDutyForm()
       return
     }
 
-    // Create new duty
     const overlapsRest = events.some(
-      (e) =>
-        e.type === 'rest' && eventsOverlap(start, end, e.start, e.end),
+      (e) => e.type === 'rest' && eventsOverlap(start, end, e.start, e.end),
     )
     if (overlapsRest) {
       if (
@@ -1015,16 +1026,24 @@ function Calendar() {
       }
     }
 
-    const newId = createId()
     const newEvent: DutyEvent = {
-      id: newId,
+      id: createId(),
       title: 'Duty Period',
+      type: 'duty',
       start,
       end,
-      type: 'duty',
       acclTZ: dutyAccl,
-      startTZ: dutyStartLoc,
-      endTZ: dutyEndLoc,
+      startTZ: partial.startTZ,
+      endTZ: partial.endTZ,
+      flights: partial.flights,
+      operatingSectors: partial.operatingSectors,
+      positioningSectors: partial.positioningSectors,
+      avgSectorTime: partial.avgSectorTime,
+      endsWithPositioning: partial.endsWithPositioning,
+      operatingEnd: partial.operatingEnd,
+      positioningAgreed: partial.positioningAgreed,
+      reportOverridden: partial.reportOverridden,
+      releaseOverridden: partial.releaseOverridden,
       violated: overlapsRest,
     }
 
@@ -1035,57 +1054,31 @@ function Calendar() {
         regulator,
         homeBaseTZ,
         dutyAccl,
-        restType,
+        rt,
       )
       const lnrMsg = summarizeViolatedLnrs(next)
       if (lnrMsg) alert(lnrMsg)
       return next
     })
 
-    if (restType === '10+travel') {
+    if (rt === '10+travel') {
       const result = scheduleTravelRestReminders(end)
       if (!result.ok) {
         setIsEdit(true)
         setEditEvent(newEvent)
-        setStartTime(
-          formatHHmmInTZ(
-            newEvent.start,
-            newEvent.startTZ || newEvent.acclTZ || acclTZ,
-          ),
-        )
-        setEndDate(
-          toDateInputValueInTZ(
-            newEvent.end,
-            newEvent.endTZ || newEvent.acclTZ || acclTZ,
-          ),
-        )
-        setEndTime(
-          formatHHmmInTZ(
-            newEvent.end,
-            newEvent.endTZ || newEvent.acclTZ || acclTZ,
-          ),
-        )
-        setModalAcclTZ(newEvent.acclTZ || acclTZ)
-        setModalStartTZ(newEvent.startTZ || acclTZ)
-        setModalEndTZ(newEvent.endTZ || acclTZ)
         setRestType('10+travel')
         setShowAddDuty(true)
-        if ((result.hoursSinceRelease ?? 0) > 15) {
-          setValidationMessage(
-            'More than 15 hours have passed since the original release time. Please update the release time to reflect the actual time at the rest location.',
-          )
-        } else {
-          setValidationMessage(
-            'The original release time has already passed. Please modify the end time of the duty to reflect the actual release time at the hotel.',
-          )
-        }
+        setValidationMessage(
+          (result.hoursSinceRelease ?? 0) > 15
+            ? 'More than 15 hours have passed since the original release time. Please update the release time.'
+            : 'The original release time has already passed. Please modify the release time.',
+        )
         return
       }
     }
 
     resetDutyForm()
   }
-
 
   const isInRange = (date: Date) => {
     if (!showAddDuty || !addDutyDate) return false
@@ -1371,198 +1364,27 @@ function Calendar() {
 
           {showAddDuty && addDutyDate && (
             <div className="slide-menu open">
-              <h3>
-                {isEdit ? 'Edit Duty' : 'Add Duty'} for{' '}
-                {addDutyDate.toDateString()}
-              </h3>
-              <label>
-                Start Date:
-                <input
-                  type="date"
-                  value={toDateInputValueInTZ(addDutyDate, calendarTZ)}
-                  onChange={(e) => applyStartDateChange(e.target.value)}
-                  aria-label="Start date"
-                />
-              </label>
-              <label>
-                Start Time (report, start location TZ):
-                <FreeTimeInput
-                  value={startTime}
-                  onChange={setStartTime}
-                  timeFormat={timeFormat}
-                  aria-label="Start time"
-                />
-                {startTime && (
-                  <span className="time-display">
-                    Wall ({(modalStartTZ || modalAcclTZ || acclTZ).replace(/_/g, ' ')}
-                    ): {formatTimeDisplay(startTime, timeFormat)} | Zulu:{' '}
-                    {getZuluTimeDisplay(
-                      startTime,
-                      addDutyDate,
-                      timeFormat,
-                      modalStartTZ || modalAcclTZ || acclTZ,
-                    )}
-                  </span>
-                )}
-              </label>
-              <label className="end-date-label">
-                <span className="end-date-label-row">
-                  End Date:
-                  {isOvernightDuty && (
-                    <span className="overnight-duty-badge" aria-live="polite">
-                      (overnight duty)
-                    </span>
-                  )}
-                </span>
-                <input
-                  key={endDateBlinkKey}
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => {
-                    setEndDate(e.target.value)
-                    setEndDateShouldBlink(false)
-                  }}
-                  className={
-                    endDateShouldBlink ? 'end-date-input end-date-blink' : 'end-date-input'
-                  }
-                  aria-describedby={
-                    isOvernightDuty ? 'overnight-duty-hint' : undefined
-                  }
-                />
-                {isOvernightDuty && (
-                  <span id="overnight-duty-hint" className="sr-only">
-                    Overnight duty: end date is after start date
-                  </span>
-                )}
-              </label>
-              <label>
-                End Time (release, end location TZ):
-                <FreeTimeInput
-                  value={endTime}
-                  onChange={setEndTime}
-                  timeFormat={timeFormat}
-                  aria-label="End time"
-                />
-                {endTime && endDate && (
-                  <span className="time-display">
-                    Wall ({(modalEndTZ || modalAcclTZ || acclTZ).replace(/_/g, ' ')}
-                    ): {formatTimeDisplay(endTime, timeFormat)} | Zulu:{' '}
-                    {getZuluTimeDisplay(
-                      endTime,
-                      startOfDayKeyInTimeZone(endDate, calendarTZ),
-                      timeFormat,
-                      modalEndTZ || modalAcclTZ || acclTZ,
-                    )}
-                  </span>
-                )}
-                {longDutyPeriodWarning && (
-                  <span
-                    className="long-duty-warning"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    Long duty period, check time and date
-                  </span>
-                )}
-              </label>
-              <label>
-                Number of Sectors:
-                <input
-                  type="number"
-                  min="1"
-                  value={sectors}
-                  onChange={(e) => setSectors(Number(e.target.value) || 1)}
-                />
-              </label>
-              <label>
-                Average Sector Time:
-                <select
-                  value={avgSectorTime}
-                  onChange={(e) =>
-                    setAvgSectorTime(e.target.value as AvgSectorTime)
-                  }
-                >
-                  <option value="<30">Less than 30 min</option>
-                  <option value="30-50">30 to less than 50 min</option>
-                  <option value=">=50">50 min or more</option>
-                </select>
-              </label>
-              <label>
-                Acclimatization Time Zone:
-                <TimeZoneSelector
-                  value={modalAcclTZ}
-                  onChange={setModalAcclTZ}
-                  placeholder="Search time zones or use global setting"
-                  allowEmpty={true}
-                />
-              </label>
-              <label>
-                Start location time zone (FDP report):
-                <TimeZoneSelector
-                  value={modalStartTZ}
-                  onChange={setModalStartTZ}
-                  placeholder="Defaults to acclimatization TZ"
-                  allowEmpty={true}
-                />
-              </label>
-              <label>
-                End location time zone (FDP release):
-                <TimeZoneSelector
-                  value={modalEndTZ}
-                  onChange={setModalEndTZ}
-                  placeholder="Defaults to acclimatization TZ"
-                  allowEmpty={true}
-                />
-              </label>
-              <p className="form-hint">
-                Home base: {homeBaseTZ.replace(/_/g, ' ')}. Used for CAR 700.42
-                time-zone rest (set in Settings → Home Base).
-              </p>
-              <label>
-                Rest Type (base / CAR 700.40):
-                <select
-                  value={restType}
-                  onChange={(e) => setRestType(e.target.value as RestType)}
-                >
-                  <option value="12h">12 hours rest</option>
-                  <option value="10+travel">
-                    10+travel (10 hours at hotel + room key)
-                  </option>
-                </select>
-              </label>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!startTime || !addDutyDate) return
-                  const sTz = modalStartTZ || modalAcclTZ || acclTZ
-                  const startYmd = toDateInputValueInTZ(addDutyDate, calendarTZ)
-                  const start = parseZonedDateTime(startYmd, startTime, sTz)
-                  const hour = getHourInTZ(start, modalAcclTZ || acclTZ)
-                  const max = getMaxFdpHours(
-                    regulator,
-                    hour,
-                    sectors,
-                    avgSectorTime,
-                  )
-                  setMaxDutyResult(
-                    `Max FDP: ${max} hours (${regulator === 'TC' ? 'CAR 705' : regulator})`,
-                  )
-                }}
-              >
-                Check Max Duty
-              </button>
-              {maxDutyResult && (
-                <div className="max-duty-result">{maxDutyResult}</div>
-              )}
-              <button type="button" onClick={handleSubmitDuty}>
-                {isEdit ? 'Update' : 'Add'}
-              </button>
-              {validationMessage && (
-                <div className="validation-error">{validationMessage}</div>
-              )}
-              <button type="button" onClick={resetDutyForm}>
-                Cancel
-              </button>
+              <DutyForm
+                key={
+                  isEdit && editEvent
+                    ? `edit-${editEvent.id}`
+                    : `add-${toDateInputValueInTZ(addDutyDate, calendarTZ)}`
+                }
+                mode={isEdit ? 'edit' : 'add'}
+                dutyDateLabel={addDutyDate.toDateString()}
+                defaultDayKey={toDateInputValueInTZ(addDutyDate, calendarTZ)}
+                timeFormat={timeFormat}
+                regulator={regulator}
+                acclTZ={acclTZ}
+                homeBaseTZ={homeBaseTZ}
+                buffers={dutyTimingBuffers}
+                editEvent={isEdit ? editEvent : null}
+                restType={restType}
+                onRestTypeChange={setRestType}
+                validationMessage={validationMessage}
+                onCancel={resetDutyForm}
+                onSubmit={handleDutyFormSubmit}
+              />
             </div>
           )}
 

@@ -1,0 +1,182 @@
+.duty-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.duty-form-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.duty-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.duty-form-row input[type='date'] {
+  flex: 0 0 auto;
+}
+
+.duty-form-flight {
+  border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  background: color-mix(in srgb, var(--text-color) 3%, transparent);
+}
+
+.duty-form-flight-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.15rem;
+}
+
+.duty-form-add-flight {
+  align-self: flex-start;
+  width: auto !important;
+  margin: 0.15rem 0 0.35rem;
+}
+
+.duty-form-derived {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, #3b82f6 12%, transparent);
+}
+
+.duty-form-derived p {
+  margin: 0.15rem 0;
+}
+
+/*
+ * Override .slide-menu button (full-width primary) for form actions.
+ * Keep hover feedback subtle with clear text contrast.
+ */
+.slide-menu .duty-form button.duty-form-btn,
+.duty-form button.duty-form-btn {
+  width: auto;
+  margin-top: 0;
+  padding: 0.35rem 0.7rem;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid transparent;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.3;
+  font-family: inherit;
+  cursor: pointer;
+  transform: none;
+  box-shadow: none;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+/* Inline ghost (Use auto) */
+.slide-menu .duty-form button.duty-form-btn-ghost,
+.duty-form button.duty-form-btn-ghost {
+  display: inline;
+  width: auto;
+  padding: 0.1rem 0.25rem;
+  margin: 0;
+  background: transparent;
+  border: none;
+  color: color-mix(in srgb, var(--text-color) 72%, #64748b);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.slide-menu .duty-form button.duty-form-btn-ghost:hover,
+.duty-form button.duty-form-btn-ghost:hover {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  color: var(--text-color);
+  text-decoration: underline;
+}
+
+/* Remove flight — destructive red */
+.slide-menu .duty-form button.duty-form-btn-danger,
+.duty-form button.duty-form-btn-danger {
+  padding: 0.25rem 0.55rem;
+  background: color-mix(in srgb, #dc2626 10%, var(--card-bg, #fff));
+  border: 1px solid color-mix(in srgb, #dc2626 35%, var(--border-color, #e2e8f0));
+  color: #b91c1c;
+}
+
+.slide-menu .duty-form button.duty-form-btn-danger:hover,
+.duty-form button.duty-form-btn-danger:hover {
+  background: color-mix(in srgb, #dc2626 18%, var(--card-bg, #fff));
+  border-color: color-mix(in srgb, #dc2626 55%, var(--border-color, #e2e8f0));
+  color: #991b1b;
+}
+
+body.dark .slide-menu .duty-form button.duty-form-btn-danger,
+body.dark .duty-form button.duty-form-btn-danger {
+  background: color-mix(in srgb, #f87171 14%, var(--card-bg, #1e293b));
+  border-color: color-mix(in srgb, #f87171 40%, var(--border-color, #334155));
+  color: #fca5a5;
+}
+
+body.dark .slide-menu .duty-form button.duty-form-btn-danger:hover,
+body.dark .duty-form button.duty-form-btn-danger:hover {
+  background: color-mix(in srgb, #f87171 24%, var(--card-bg, #1e293b));
+  border-color: color-mix(in srgb, #f87171 55%, var(--border-color, #334155));
+  color: #fecaca;
+}
+
+/* Secondary: Add flight, Cancel */
+.slide-menu .duty-form button.duty-form-btn-secondary,
+.duty-form button.duty-form-btn-secondary {
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.7rem 0.75rem;
+  background: color-mix(in srgb, var(--text-color) 6%, var(--card-bg, #fff));
+  border: 1px solid color-mix(in srgb, var(--text-color) 16%, var(--border-color, #e2e8f0));
+  color: var(--text-color);
+  font-weight: 600;
+}
+
+.slide-menu .duty-form button.duty-form-btn-secondary:hover,
+.duty-form button.duty-form-btn-secondary:hover {
+  background: color-mix(in srgb, var(--text-color) 11%, var(--card-bg, #fff));
+  border-color: color-mix(in srgb, var(--text-color) 28%, var(--border-color, #e2e8f0));
+  color: var(--text-color);
+}
+
+.slide-menu .duty-form button.duty-form-btn-secondary.duty-form-add-flight,
+.duty-form button.duty-form-btn-secondary.duty-form-add-flight {
+  width: auto;
+  margin-top: 0.15rem;
+  padding: 0.45rem 0.75rem;
+}
+
+/* Primary submit — keep full-width brand action */
+.slide-menu .duty-form button.duty-form-btn-primary,
+.duty-form button.duty-form-btn-primary {
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.7rem 0.75rem;
+  background: var(--primary-color);
+  border: 1px solid transparent;
+  color: var(--primary-contrast, #fff);
+  font-weight: 600;
+}
+
+.slide-menu .duty-form button.duty-form-btn-primary:hover,
+.duty-form button.duty-form-btn-primary:hover {
+  background: var(--primary-hover, var(--primary-color));
+  color: var(--primary-contrast, #fff);
+  filter: brightness(1.02);
+}
+
+.duty-form-flight-head .duty-form-btn-danger {
+  flex-shrink: 0;
+}

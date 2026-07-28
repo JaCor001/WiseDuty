@@ -383,13 +383,30 @@ export function dutyHasEarlyMarker(
   return isEarlyDuty(event.start, regulator, acclTZFor(event, globalAcclTZ))
 }
 
+/** Operating release for E/L/N — excludes trailing deadhead when known. */
+export function fdpOperatingEnd(event: DutyEvent): Date {
+  if (
+    event.type === 'duty' &&
+    event.endsWithPositioning &&
+    event.operatingEnd &&
+    !isNaN(event.operatingEnd.getTime())
+  ) {
+    return event.operatingEnd
+  }
+  return event.end
+}
+
 export function dutyHasLateMarker(
   event: DutyEvent,
   regulator: Regulator,
   globalAcclTZ: string,
 ): boolean {
   if (event.type !== 'duty') return false
-  return isLateDuty(event.end, regulator, acclTZFor(event, globalAcclTZ))
+  return isLateDuty(
+    fdpOperatingEnd(event),
+    regulator,
+    acclTZFor(event, globalAcclTZ),
+  )
 }
 
 export function dutyHasNightMarker(
@@ -399,7 +416,7 @@ export function dutyHasNightMarker(
 ): boolean {
   if (event.type !== 'duty') return false
   const tz = acclTZFor(event, globalAcclTZ)
-  return isNightDuty(event.start, event.end, regulator, tz)
+  return isNightDuty(event.start, fdpOperatingEnd(event), regulator, tz)
 }
 
 /**
@@ -447,13 +464,16 @@ export function isDisruptiveTransition(
   const prevTz = acclTZFor(previous, globalAcclTZ)
   const nextTz = acclTZFor(next, globalAcclTZ)
 
+  const prevOpEnd = fdpOperatingEnd(previous)
+  const nextOpEnd = fdpOperatingEnd(next)
+
   const prevE = isEarlyDuty(previous.start, regulator, prevTz)
-  const prevL = isLateDuty(previous.end, regulator, prevTz)
-  const prevN = isNightDuty(previous.start, previous.end, regulator, prevTz)
+  const prevL = isLateDuty(prevOpEnd, regulator, prevTz)
+  const prevN = isNightDuty(previous.start, prevOpEnd, regulator, prevTz)
 
   const nextE = isEarlyDuty(next.start, regulator, nextTz)
-  const nextL = isLateDuty(next.end, regulator, nextTz)
-  const nextN = isNightDuty(next.start, next.end, regulator, nextTz)
+  const nextL = isLateDuty(nextOpEnd, regulator, nextTz)
+  const nextN = isNightDuty(next.start, nextOpEnd, regulator, nextTz)
 
   const prevLateOrNight = prevL || prevN
   const nextLateOrNight = nextL || nextN
@@ -495,8 +515,10 @@ export function getDutyMarkers(
   if (event.type !== 'duty') return []
 
   const tz = acclTZFor(event, globalAcclTZ)
+  // L/N character is about the operating FDP, not trailing deadhead.
+  const operatingEnd = fdpOperatingEnd(event)
   const startParts = getZonedTimeParts(event.start, tz)
-  const endParts = getZonedTimeParts(event.end, tz)
+  const endParts = getZonedTimeParts(operatingEnd, tz)
 
   let showStart = isStartOnDay
   let showEnd = isEndOnDay
@@ -509,11 +531,11 @@ export function getDutyMarkers(
   if (showStart && isEarlyDuty(event.start, regulator, tz)) {
     markers.push('E')
   }
-  if (showEnd && isLateDuty(event.end, regulator, tz)) {
+  if (showEnd && isLateDuty(operatingEnd, regulator, tz)) {
     markers.push('L')
   }
-  // Night is a whole-duty property; show once on the end (release) day only.
-  if (showEnd && isNightDuty(event.start, event.end, regulator, tz)) {
+  // Night is a whole-duty property; show once on the operating release day.
+  if (showEnd && isNightDuty(event.start, operatingEnd, regulator, tz)) {
     markers.push('N')
   }
 

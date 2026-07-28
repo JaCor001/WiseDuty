@@ -36,6 +36,7 @@ import {
   shouldRequireSdfIn168,
   workActivitySpanHours,
 } from './rest-70029'
+import { evaluatePositioningRestForDuty } from './rest-70043'
 
 const MS_168H = 168 * 60 * 60 * 1000
 
@@ -67,31 +68,79 @@ export function serializeEvents(events: DutyEvent[]): StoredDutyEvent[] {
     baseRestType: e.baseRestType,
     workFactor: e.workFactor,
     freePurpose: e.freePurpose,
+    operatingSectors: e.operatingSectors,
+    positioningSectors: e.positioningSectors,
+    avgSectorTime: e.avgSectorTime,
+    endsWithPositioning: e.endsWithPositioning,
+    operatingEnd: e.operatingEnd?.toISOString(),
+    positioningAgreed: e.positioningAgreed,
+    flights: e.flights?.map((f) => ({
+      id: f.id,
+      depIcao: f.depIcao,
+      arrIcao: f.arrIcao,
+      dep: f.dep.toISOString(),
+      arr: f.arr.toISOString(),
+      isDeadhead: f.isDeadhead,
+      customsPreclearance: f.customsPreclearance,
+    })),
+    reportOverridden: e.reportOverridden,
+    releaseOverridden: e.releaseOverridden,
   }))
 }
 
 export function deserializeEvents(stored: StoredDutyEvent[]): DutyEvent[] {
   return stored
-    .map((e) => ({
-      id: e.id,
-      title: e.title,
-      start: new Date(e.start),
-      end: new Date(e.end),
-      type: VALID_TYPES.has(e.type) ? e.type : 'duty',
-      acclTZ: e.acclTZ,
-      startTZ: e.startTZ,
-      endTZ: e.endTZ,
-      violated: e.violated,
-      isLocalNightRest: e.isLocalNightRest,
-      restKind: e.restKind,
-      restRule: e.restRule,
-      requiredRestHours: e.requiredRestHours,
-      requiredLocalNights: e.requiredLocalNights,
-      ruleWhy: e.ruleWhy,
-      baseRestType: e.baseRestType,
-      workFactor: e.workFactor,
-      freePurpose: e.freePurpose,
-    }))
+    .map((e) => {
+      const operatingEnd = e.operatingEnd ? new Date(e.operatingEnd) : undefined
+      const flights = e.flights
+        ?.map((f) => {
+          const dep = new Date(f.dep)
+          const arr = new Date(f.arr)
+          if (isNaN(dep.getTime()) || isNaN(arr.getTime())) return null
+          return {
+            id: f.id,
+            depIcao: f.depIcao,
+            arrIcao: f.arrIcao,
+            dep,
+            arr,
+            isDeadhead: !!f.isDeadhead,
+            customsPreclearance: f.customsPreclearance,
+          }
+        })
+        .filter((f): f is NonNullable<typeof f> => f != null)
+      return {
+        id: e.id,
+        title: e.title,
+        start: new Date(e.start),
+        end: new Date(e.end),
+        type: VALID_TYPES.has(e.type) ? e.type : 'duty',
+        acclTZ: e.acclTZ,
+        startTZ: e.startTZ,
+        endTZ: e.endTZ,
+        violated: e.violated,
+        isLocalNightRest: e.isLocalNightRest,
+        restKind: e.restKind,
+        restRule: e.restRule,
+        requiredRestHours: e.requiredRestHours,
+        requiredLocalNights: e.requiredLocalNights,
+        ruleWhy: e.ruleWhy,
+        baseRestType: e.baseRestType,
+        workFactor: e.workFactor,
+        freePurpose: e.freePurpose,
+        operatingSectors: e.operatingSectors,
+        positioningSectors: e.positioningSectors,
+        avgSectorTime: e.avgSectorTime,
+        endsWithPositioning: e.endsWithPositioning,
+        operatingEnd:
+          operatingEnd && !isNaN(operatingEnd.getTime())
+            ? operatingEnd
+            : undefined,
+        positioningAgreed: e.positioningAgreed,
+        flights: flights && flights.length > 0 ? flights : undefined,
+        reportOverridden: e.reportOverridden,
+        releaseOverridden: e.releaseOverridden,
+      }
+    })
     .filter((e) => !isNaN(e.start.getTime()) && !isNaN(e.end.getTime()))
 }
 
@@ -169,6 +218,9 @@ function restTitle(plan: TimeZoneRestPlan): string {
     const code = plan.restRule.replace('CAR ', '')
     return `Required Rest — 1× local night (${code})`
   }
+  if (plan.restRule === 'CAR 700.43') {
+    return `Required Rest (${plan.restHours}h) — positioning (700.43)`
+  }
   if (plan.restRule === 'CAR 700.42(1)') {
     return `Required Rest — ${plan.restHours}h (700.42(1))`
   }
@@ -178,6 +230,49 @@ function restTitle(plan: TimeZoneRestPlan): string {
   return plan.restHours === 10
     ? 'Required Rest (10+travel)'
     : `Required Rest (${plan.restHours}h)`
+}
+
+/**
+ * CAR 700.43 — increase clock rest after trailing positioning when total duty
+ * exceeds max FDP. Stacks by taking the longer of positioning rest vs plan.
+ * Does not reduce local nights already required by 700.41/42/51/29.
+ */
+export function applyPositioningRestToPlan(
+  plan: TimeZoneRestPlan,
+  duty: DutyEvent,
+  regulator: Regulator,
+  globalAcclTZ: string,
+  fallbackSectors = 1,
+): TimeZoneRestPlan {
+  const pos = evaluatePositioningRestForDuty(
+    duty,
+    regulator,
+    globalAcclTZ,
+    fallbackSectors,
+    duty.avgSectorTime ?? '>=50',
+  )
+  if (!pos || pos.restHours <= 0) return plan
+
+  if (pos.restHours > plan.restHours + 1e-9) {
+    return {
+      ...plan,
+      restHours: pos.restHours,
+      restKind: 'positioning',
+      restRule: 'CAR 700.43',
+      why:
+        plan.why && plan.localNights > 0
+          ? `${pos.why} Local night requirement(s) from other rules still apply (${plan.localNights}×). Prior plan: ${plan.why}`
+          : plan.why
+            ? `${pos.why} (Replaces shorter clock rest under ${plan.restRule}: ${plan.why})`
+            : pos.why,
+    }
+  }
+
+  // Positioning evaluated but another rule already requires equal/longer clock rest
+  return {
+    ...plan,
+    why: `${plan.why} Also evaluated CAR 700.43 positioning rest (${pos.restHours.toFixed(1)} h); existing plan is longer or equal.`,
+  }
 }
 
 /**
@@ -376,8 +471,8 @@ export function inferBaseRestType(rest?: DutyEvent): RestType {
 
 /**
  * Build the single required rest after a duty.
- * Merges 700.40 / 700.42 / 700.51 / 700.41 / 700.29 into one bar: the longest
- * of clock rest and earliest LNR completion (no separate LNR strip).
+ * Merges 700.40 / 700.42 / 700.51 / 700.41 / 700.29 / 700.43 into one bar: the
+ * longest of clock rest and earliest LNR completion (no separate LNR strip).
  *
  * @param scheduleEvents optional full schedule (duty/reserve/standby/free) for
  *   700.29 hours-of-work and free-day detection; defaults to `allDuties`.
@@ -424,6 +519,13 @@ export function buildRequiredRestForDuty(
     regulator,
     globalAcclTZ,
     next,
+  )
+  plan = applyPositioningRestToPlan(
+    plan,
+    duty,
+    regulator,
+    globalAcclTZ,
+    duty.operatingSectors ?? 1,
   )
 
   const accl = dutyAcclTZ(duty, globalAcclTZ)
@@ -605,6 +707,7 @@ export function summarizeViolatedLnrs(events: DutyEvent[]): string | null {
         e.restRule === 'CAR 700.42(1)' ||
         e.restRule === 'CAR 700.42(2)' ||
         e.restRule === 'CAR 700.41' ||
+        e.restRule === 'CAR 700.43' ||
         e.restRule === 'CAR 700.51'),
   )
   if (bad.length === 0) return null

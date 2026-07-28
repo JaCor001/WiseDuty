@@ -307,6 +307,12 @@ function restRuleDefinition(rule?: RestRuleCode): {
         rule: 'Under the 60-hour option, when hours of work and activity in any 168 consecutive hours require free-time structure, the flight crew member must receive one single day free from duty entirely within that period — time free from duty from the beginning of the first local night’s rest until the end of the following local night’s rest (two consecutive local nights). WiseDuty attaches that two-night requirement to the required rest after the FDP that ends the window, the same way consecutive WOCL duties attach a local night under CAR 700.51.',
         reference: 'CAR 700.29(1)(c); AC 700-047 §§2.3(i), 4.31–4.32',
       }
+    case 'CAR 700.43':
+      return {
+        title: 'Rest after positioning (deadhead)',
+        rule: 'If a flight crew member must travel for positioning immediately after a flight duty period and the FDP plus that positioning exceeds the maximum flight duty period under CAR 700.28, the rest before the next FDP must equal the hours of work when the exceedance is three hours or less, or the hours of work plus the exceedance when it is more than three hours. Rest is never shorter than CAR 700.40. Exceeding the maximum by more than three hours requires crew agreement and must not exceed seven hours (CAR 700.43(3)).',
+        reference: 'CAR 700.43; AC 700-047 §§4.45–4.47',
+      }
     case 'CAR 700.40':
     default:
       return {
@@ -476,21 +482,46 @@ export function explainEvent(
       )
     }
 
-    let why = `This flight duty period runs ${formatHours(hours)} h from report to release, evaluated for ${regLabel} using acclimatized time in ${zoneLabel(accl)}.`
+    let why = `This flight duty period runs ${formatHours(hours)} h from report to final release, evaluated for ${regLabel} using acclimatized time in ${zoneLabel(accl)}.`
     if (classification !== 'Standard day duty') {
       why += ` It is classified as ${classification.toLowerCase()} for early/late/night rules (AC 700-047 §2.3).`
+    }
+    if (event.endsWithPositioning && event.operatingEnd) {
+      const opH =
+        (event.operatingEnd.getTime() - event.start.getTime()) / (1000 * 60 * 60)
+      const posH =
+        (event.end.getTime() - event.operatingEnd.getTime()) / (1000 * 60 * 60)
+      meta.push(`Operating release · ${formatWhen(event.operatingEnd)}`)
+      meta.push(
+        `Operating FDP · ${formatHours(opH)} h · Positioning (DH) · ${formatHours(posH)} h`,
+      )
+      if (event.operatingSectors != null) {
+        meta.push(`Operating sectors · ${event.operatingSectors}`)
+      }
+      if (event.positioningSectors != null && event.positioningSectors > 0) {
+        meta.push(`Positioning sectors · ${event.positioningSectors}`)
+      }
+      if (event.positioningAgreed) {
+        meta.push('Extended positioning · crew agreed (700.43(3))')
+      }
+      why += ` Ends with trailing deadhead/positioning after operating release (${formatHours(posH)} h). Positioning flights do not count toward the 700.28 sector column; rest after an overrun follows CAR 700.43.`
+    } else if (event.operatingSectors != null) {
+      meta.push(`Operating sectors · ${event.operatingSectors}`)
+      if (event.positioningSectors != null && event.positioningSectors > 0) {
+        meta.push(`Positioning sectors · ${event.positioningSectors}`)
+      }
     }
     if (event.violated) {
       why += ' A compliance flag is set (for example overlap with rest).'
     }
 
     return {
-      badge: 'Duty',
+      badge: event.endsWithPositioning ? 'Duty+DH' : 'Duty',
       title: event.title || 'Flight duty period',
-      rule: 'A flight duty period (FDP) is the time from the earlier of report for duty, report for flight, positioning, or standby, until engines off / rotors stopped at the end of the last flight. Maximum FDP length depends on acclimatized start time, number of sectors, average sector time, and any augmentation or split-duty provisions.',
+      rule: 'A flight duty period (FDP) is the time from the earlier of report for duty, report for flight, positioning, or standby, until engines off / rotors stopped at the end of the last operating flight. Positioning after that is duty/hours of work and may extend total duty under CAR 700.43. Maximum operating FDP depends on acclimatized start time, operating sectors (positioning not counted), average sector time, and any augmentation or split-duty provisions.',
       reference:
         regulator === 'TC'
-          ? 'CAR 700.28 (maximum FDP); CAR 101 / AC 700-047 §2.3 (definitions); CAR 700.60–700.62 (augmented / ULR where applicable)'
+          ? 'CAR 700.28 (maximum FDP, incl. (6) positioning not a flight); CAR 700.43 (rest after positioning); CAR 101 / AC 700-047 §2.3'
           : `${regLabel} flight duty period limitations`,
       whyApplies: why,
       meta,
@@ -509,6 +540,9 @@ export function explainEvent(
   }
   if (event.restRule) {
     meta.push(`Rule · ${event.restRule}`)
+  }
+  if (event.restRule === 'CAR 700.43') {
+    meta.push('Rest extended due to trailing positioning / deadhead')
   }
 
   const status = event.violated

@@ -10,13 +10,40 @@ import {
 import type {
   AvgSectorTime,
   CalendarTimeReference,
+  DutyTimingBuffers,
   Regulator,
   TimeFormat,
   TimeFreeOption,
 } from '../../domain/types'
-import { STORAGE_KEYS } from '../../domain/types'
+import { DEFAULT_DUTY_TIMING_BUFFERS, STORAGE_KEYS } from '../../domain/types'
 import { deviceTimeZone } from '../../domain/time'
 import { readString, writeString } from '../../shared/storage'
+
+function parseDutyTimingBuffers(raw: string): DutyTimingBuffers {
+  try {
+    const o = JSON.parse(raw) as Partial<DutyTimingBuffers>
+    return {
+      reportOperatingMin:
+        Number(o.reportOperatingMin) || DEFAULT_DUTY_TIMING_BUFFERS.reportOperatingMin,
+      reportOperatingCustomsMin:
+        Number(o.reportOperatingCustomsMin) ||
+        DEFAULT_DUTY_TIMING_BUFFERS.reportOperatingCustomsMin,
+      reportDeadheadMin:
+        Number(o.reportDeadheadMin) || DEFAULT_DUTY_TIMING_BUFFERS.reportDeadheadMin,
+      reportDeadheadCustomsMin:
+        Number(o.reportDeadheadCustomsMin) ||
+        DEFAULT_DUTY_TIMING_BUFFERS.reportDeadheadCustomsMin,
+      releaseOperatingMin:
+        Number(o.releaseOperatingMin) ||
+        DEFAULT_DUTY_TIMING_BUFFERS.releaseOperatingMin,
+      releaseDeadheadMin:
+        Number(o.releaseDeadheadMin) ||
+        DEFAULT_DUTY_TIMING_BUFFERS.releaseDeadheadMin,
+    }
+  } catch {
+    return { ...DEFAULT_DUTY_TIMING_BUFFERS }
+  }
+}
 
 interface SettingsContextValue {
   darkMode: boolean
@@ -42,6 +69,8 @@ interface SettingsContextValue {
   setCalendarDisplayTZ: (value: string) => void
   /** Resolved IANA zone for calendar day cells / bars. */
   resolvedCalendarTZ: string
+  dutyTimingBuffers: DutyTimingBuffers
+  setDutyTimingBuffers: (value: DutyTimingBuffers) => void
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null)
@@ -113,6 +142,15 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [calendarDisplayTZ, setCalendarDisplayTZState] = useState(() =>
     readString(STORAGE_KEYS.calendarDisplayTZ, defaultTimeZone()),
   )
+  const [dutyTimingBuffers, setDutyTimingBuffersState] =
+    useState<DutyTimingBuffers>(() =>
+      parseDutyTimingBuffers(
+        readString(
+          STORAGE_KEYS.dutyTimingBuffers,
+          JSON.stringify(DEFAULT_DUTY_TIMING_BUFFERS),
+        ),
+      ),
+    )
 
   useEffect(() => {
     document.body.className = darkMode ? 'dark' : 'light'
@@ -176,6 +214,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     writeString(STORAGE_KEYS.calendarDisplayTZ, value)
   }, [])
 
+  const setDutyTimingBuffers = useCallback((value: DutyTimingBuffers) => {
+    setDutyTimingBuffersState(value)
+    writeString(STORAGE_KEYS.dutyTimingBuffers, JSON.stringify(value))
+  }, [])
+
   const resolvedCalendarTZ = useMemo(
     () =>
       resolveCalendarTimeZone(
@@ -210,6 +253,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       calendarDisplayTZ,
       setCalendarDisplayTZ,
       resolvedCalendarTZ,
+      dutyTimingBuffers,
+      setDutyTimingBuffers,
     }),
     [
       darkMode,
@@ -234,6 +279,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       calendarDisplayTZ,
       setCalendarDisplayTZ,
       resolvedCalendarTZ,
+      dutyTimingBuffers,
+      setDutyTimingBuffers,
     ],
   )
 

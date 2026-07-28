@@ -38,6 +38,46 @@ const BAR_TOP_OVERLAP = 'var(--event-bar-top-overlap, 56%)'
 const BAR_TOP_PCT = 46
 const BAR_TOP_OVERLAP_PCT = 56
 
+/**
+ * Structural free-day rest (CAR 700.29, 2+ local nights) already draws an SDF
+ * chip via getDutyMarkers. A displaySdf nested in that rest is the same free day
+ * — attach its sheet metadata instead of rendering a second chip.
+ */
+function isStructuralSdfRest(event: DutyEvent): boolean {
+  return (
+    event.type === 'rest' &&
+    event.restRule === 'CAR 700.29' &&
+    (event.requiredLocalNights ?? 0) >= 2
+  )
+}
+
+function restContainsSdf(
+  rest: DutyEvent,
+  sdf: DisplaySdf['sdf'],
+): boolean {
+  return (
+    rest.start.getTime() <= sdf.start.getTime() &&
+    rest.end.getTime() >= sdf.end.getTime()
+  )
+}
+
+function findDisplaySdfForRest(
+  rest: DutyEvent,
+  displaySdfs: DisplaySdf[],
+): DisplaySdf | undefined {
+  if (!isStructuralSdfRest(rest)) return undefined
+  return displaySdfs.find((d) => restContainsSdf(rest, d.sdf))
+}
+
+function isSdfCoveredByStructuralRest(
+  sdf: DisplaySdf['sdf'],
+  events: DutyEvent[],
+): boolean {
+  return events.some(
+    (e) => isStructuralSdfRest(e) && restContainsSdf(e, sdf),
+  )
+}
+
 export interface PhantomSegment {
   key: string
   restId: string
@@ -253,17 +293,22 @@ function buildOneDayLayout(opts: {
       dayEnd,
     )
 
+    const dayKeyAccl = getZonedTimeParts(date, acclTZ).dayKey
     const markers = getDutyMarkers(
       event,
       regulator,
       acclTZ,
       isStart,
       isEnd,
+      dayKeyAccl,
     )
     const showRestChip =
       event.type !== 'rest' || isHostDayFor(hostMap, event.id, dayStartMs)
+    const coveringDisplay =
+      event.type === 'rest' ? findDisplaySdfForRest(event, displaySdfs) : undefined
     markers.forEach((marker) => {
       if (event.type === 'rest' && !showRestChip) return
+      const attachSdf = marker === 'SDF' && coveringDisplay
       rawMarkers.push({
         type: marker,
         eventId: event.id,
@@ -273,6 +318,11 @@ function buildOneDayLayout(opts: {
         barTop,
         barTopPct,
         violated: event.violated,
+        sdfProspective: attachSdf
+          ? coveringDisplay.reasons.includes('prospective')
+          : undefined,
+        sdfReasons: attachSdf ? coveringDisplay.reasons : undefined,
+        sdfRef: attachSdf ? coveringDisplay.sdf : undefined,
       })
     })
 
@@ -363,9 +413,12 @@ function buildOneDayLayout(opts: {
     })
   }
 
-  // SDF display chips (host day precomputed in hostMap under sdfId)
+  // SDF display chips (host day precomputed in hostMap under sdfId).
+  // Skip when a structural CAR 700.29 rest already owns this free day —
+  // that rest's chip is enriched with the same displaySdf metadata above.
   displaySdfs.forEach((display, index) => {
     const sdf = display.sdf
+    if (isSdfCoveredByStructuralRest(sdf, events)) return
     const sdfId = `sdf-${sdf.start.toISOString()}-${index}`
     if (
       sdf.end.getTime() <= dayStartMs ||
