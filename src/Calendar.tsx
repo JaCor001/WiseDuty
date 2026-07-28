@@ -10,7 +10,7 @@ import {
 import { Link } from 'react-router-dom'
 import './Calendar.css'
 import './App.css'
-import type { AvgSectorTime, DutyEvent, RestType } from './domain/types'
+import type { DutyEvent, RestType } from './domain/types'
 import { defaultWorkFactor, MAX_WEEKLY_DUTY_HOURS } from './domain/types'
 import {
   createId,
@@ -50,14 +50,8 @@ import {
 import { buildPreferredHostMap } from './domain/marker-layout'
 import {
   eventsOverlap,
-  getAbsoluteMaxFdpHours,
-  getMaxFdpHours,
   wouldExceedWeeklyLimit,
 } from './domain/regulations'
-import {
-  assertPositioningAllowed,
-  computePositioningRestHours,
-} from './domain/rest-70043'
 import { CalendarDayCell } from './CalendarDayCell'
 import DutyForm from './DutyForm'
 import {
@@ -67,15 +61,7 @@ import {
 } from './domain/rest-70029'
 import {
   addCivilDaysInTimeZone,
-  addDaysToDateInputValue,
-  daysBetweenDateInputValues,
-  formatHHmmInTZ,
-  formatTimeDisplay,
-  getHourInTZ,
   getZonedTimeParts,
-  getZuluTimeDisplay,
-  isOvernightDutyPeriod,
-  parseDateInputValue,
   parseZonedDateTime,
   startOfDayInTimeZone,
   startOfDayKeyInTimeZone,
@@ -94,9 +80,7 @@ import {
   saveDeletedEvents,
   saveEvents,
 } from './shared/storage'
-import FreeTimeInput from './shared/ui/FreeTimeInput'
 import SettingsPanel from './shared/ui/SettingsPanel'
-import TimeZoneSelector from './shared/ui/TimeZoneSelector'
 import ThemeToggle from './shared/ui/ThemeToggle'
 import { IconClose, IconSettings } from './shared/ui/icons'
 
@@ -107,10 +91,6 @@ function Calendar() {
     regulator,
     acclTZ,
     referenceTZ,
-    sectors,
-    setSectors,
-    avgSectorTime,
-    setAvgSectorTime,
     timeFreeOption,
     calendarTimeRef,
     resolvedCalendarTZ,
@@ -180,56 +160,13 @@ function Calendar() {
   const [menuDate, setMenuDate] = useState<Date | null>(null)
   const [showAddDuty, setShowAddDuty] = useState(false)
   const [addDutyDate, setAddDutyDate] = useState<Date | null>(null)
-  const [startTime, setStartTime] = useState('')
-  const [endTime, setEndTime] = useState('')
-  const [endDate, setEndDate] = useState('')
-  const [modalAcclTZ, setModalAcclTZ] = useState('')
-  const [modalStartTZ, setModalStartTZ] = useState('')
-  const [modalEndTZ, setModalEndTZ] = useState('')
   const [restType, setRestType] = useState<RestType>('12h')
-  const [positioningSectors, setPositioningSectors] = useState(0)
-  const [endsWithPositioning, setEndsWithPositioning] = useState(false)
-  const [operatingEndDate, setOperatingEndDate] = useState('')
-  const [operatingEndTime, setOperatingEndTime] = useState('')
-  const [positioningAgreed, setPositioningAgreed] = useState(false)
   const [isEdit, setIsEdit] = useState(false)
   const [editEvent, setEditEvent] = useState<DutyEvent | null>(null)
   const [animating, setAnimating] = useState(false)
   const [infoSheet, setInfoSheet] = useState<InfoSheetContent | null>(null)
   const [showSettings, setShowSettings] = useState(false)
-  const [maxDutyResult, setMaxDutyResult] = useState('')
   const [validationMessage, setValidationMessage] = useState('')
-  /** Re-key end-date input to re-run blink animation after auto overnight adjust. */
-  const [endDateBlinkKey, setEndDateBlinkKey] = useState(0)
-  const [endDateShouldBlink, setEndDateShouldBlink] = useState(false)
-
-  const resetPositioningForm = () => {
-    setPositioningSectors(0)
-    setEndsWithPositioning(false)
-    setOperatingEndDate('')
-    setOperatingEndTime('')
-    setPositioningAgreed(false)
-  }
-
-  const loadPositioningFormFromDuty = (duty: DutyEvent) => {
-    setPositioningSectors(duty.positioningSectors ?? 0)
-    setEndsWithPositioning(!!duty.endsWithPositioning)
-    setPositioningAgreed(!!duty.positioningAgreed)
-    if (duty.endsWithPositioning && duty.operatingEnd) {
-      const eTz = duty.endTZ || duty.acclTZ || acclTZ
-      setOperatingEndDate(toDateInputValueInTZ(duty.operatingEnd, eTz))
-      setOperatingEndTime(formatHHmmInTZ(duty.operatingEnd, eTz))
-    } else {
-      setOperatingEndDate('')
-      setOperatingEndTime('')
-    }
-    if (duty.operatingSectors != null && duty.operatingSectors >= 1) {
-      setSectors(duty.operatingSectors)
-    }
-    if (duty.avgSectorTime) {
-      setAvgSectorTime(duty.avgSectorTime)
-    }
-  }
 
   useEffect(() => {
     // Avoid rewriting localStorage on mount with an identical payload
@@ -245,103 +182,6 @@ function Calendar() {
       if (pressTimerRef.current) clearTimeout(pressTimerRef.current)
     }
   }, [])
-
-  // Overnight: if end instant ≤ start on the same end-date label, roll end date.
-  useEffect(() => {
-    if (!showAddDuty || !addDutyDate || !startTime || !endTime || !endDate)
-      return
-    const startYmd = toDateInputValueInTZ(addDutyDate, calendarTZ)
-    const sTz = modalStartTZ || modalAcclTZ || acclTZ
-    const eTz = modalEndTZ || modalAcclTZ || acclTZ
-    const start = parseZonedDateTime(startYmd, startTime, sTz)
-    const endOnLabel = parseZonedDateTime(endDate, endTime, eTz)
-    if (isNaN(start.getTime()) || isNaN(endOnLabel.getTime())) return
-    // Same civil end label as start day and end ≤ start → need next end-day
-    if (endDate === startYmd && endOnLabel.getTime() <= start.getTime()) {
-      const auto = addDaysToDateInputValue(endDate, 1)
-      if (auto !== endDate) {
-        setEndDate(auto)
-        setEndDateShouldBlink(true)
-        setEndDateBlinkKey((k) => k + 1)
-      }
-    }
-  }, [
-    showAddDuty,
-    addDutyDate,
-    startTime,
-    endTime,
-    endDate,
-    calendarTZ,
-    modalStartTZ,
-    modalEndTZ,
-    modalAcclTZ,
-    acclTZ,
-  ])
-
-  useEffect(() => {
-    if (!endDateShouldBlink) return
-    const t = setTimeout(() => setEndDateShouldBlink(false), 1400)
-    return () => clearTimeout(t)
-  }, [endDateShouldBlink, endDateBlinkKey])
-
-  const isOvernightDuty = useMemo(() => {
-    if (!showAddDuty || !addDutyDate || !startTime || !endTime || !endDate) {
-      return false
-    }
-    const startYmd = toDateInputValueInTZ(addDutyDate, calendarTZ)
-    const sTz = modalStartTZ || modalAcclTZ || acclTZ
-    const eTz = modalEndTZ || modalAcclTZ || acclTZ
-    const start = parseZonedDateTime(startYmd, startTime, sTz)
-    const end = parseZonedDateTime(endDate, endTime, eTz)
-    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start)
-      return false
-    // Spans midnight in calendar display zone, or end civil day ≠ start civil day
-    const startCal = toDateInputValueInTZ(start, calendarTZ)
-    const endCal = toDateInputValueInTZ(end, calendarTZ)
-    return (
-      startCal !== endCal ||
-      isOvernightDutyPeriod(startYmd, startTime, endDate, endTime)
-    )
-  }, [
-    showAddDuty,
-    addDutyDate,
-    startTime,
-    endTime,
-    endDate,
-    calendarTZ,
-    modalStartTZ,
-    modalEndTZ,
-    modalAcclTZ,
-    acclTZ,
-  ])
-
-  const longDutyPeriodWarning = useMemo(() => {
-    if (!showAddDuty || !addDutyDate || !startTime || !endTime || !endDate) {
-      return false
-    }
-    const startYmd = toDateInputValueInTZ(addDutyDate, calendarTZ)
-    const sTz = modalStartTZ || modalAcclTZ || acclTZ
-    const eTz = modalEndTZ || modalAcclTZ || acclTZ
-    const start = parseZonedDateTime(startYmd, startTime, sTz)
-    const end = parseZonedDateTime(endDate, endTime, eTz)
-    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
-      return false
-    }
-    const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
-    return hours > getAbsoluteMaxFdpHours(regulator)
-  }, [
-    showAddDuty,
-    addDutyDate,
-    startTime,
-    endTime,
-    endDate,
-    regulator,
-    calendarTZ,
-    modalStartTZ,
-    modalEndTZ,
-    modalAcclTZ,
-    acclTZ,
-  ])
 
   const now = useMemo(() => new Date(), [])
   const minMonth = useMemo(
@@ -370,7 +210,6 @@ function Calendar() {
       Sat: 6,
     }
     const firstDow = wdMap[wdLabel] ?? 0
-    // 6 weeks fixed grid
     const gridStart = addCivilDaysInTimeZone(firstOfMonth, calendarTZ, -firstDow)
     const days: Date[] = []
     let cur = gridStart
@@ -387,9 +226,7 @@ function Calendar() {
     [currentDate, calendarTZ],
   )
 
-
   // Layout once when schedule/view changes — NOT on selection clicks.
-  // Duty add/edit/delete still run recomputeAfterDuty* → setEvents → this rebuilds.
   const scheduleLayout = useMemo(() => {
     const restIntervals = events
       .filter((e) => e.type === 'rest')
@@ -738,59 +575,19 @@ function Calendar() {
     clearDaySelection()
   }
 
-  /**
-   * Move start date; shift end date by the same number of civil days so the
-   * FDP duration (and overnight span) is preserved. Avoids an accidentally
-   * multi-day “long duty” when only the start day was moved.
-   */
-  const applyStartDateChange = (newStartYmd: string) => {
-    if (!newStartYmd) return
-    const newStart = parseDateInputValue(newStartYmd)
-    if (!newStart) return
-
-    const prevStartYmd = addDutyDate
-      ? toDateInputValueInTZ(addDutyDate, calendarTZ)
-      : newStartYmd
-    const delta = daysBetweenDateInputValues(prevStartYmd, newStartYmd)
-
-    // Store as calendar-TZ midnight of that civil date
-    const dayInst = startOfDayKeyInTimeZone(newStartYmd, calendarTZ)
-    setAddDutyDate(dayInst)
-    selectDate(dayInst)
-
-    if (delta === 0) return
-
-    if (endDate) {
-      const shiftedEnd = addDaysToDateInputValue(endDate, delta)
-      if (shiftedEnd !== endDate) {
-        setEndDate(shiftedEnd)
-        setEndDateShouldBlink(true)
-        setEndDateBlinkKey((k) => k + 1)
-      }
-    } else {
-      setEndDate(newStartYmd)
-    }
-  }
-
   const handleClick = (date: Date) => {
     if (showMenu) return
     if (showAddDuty) {
-      applyStartDateChange(toDateInputValueInTZ(date, calendarTZ))
+      const ymd = toDateInputValueInTZ(date, calendarTZ)
+      const dayInst = startOfDayKeyInTimeZone(ymd, calendarTZ)
+      setAddDutyDate(dayInst)
+      selectDate(dayInst)
     } else if (isEdit) {
       const duty = findDutyOnDate(events, date)
       if (duty) {
         selectDate(date)
         setEditEvent(duty)
-        const sTz = duty.startTZ || duty.acclTZ || acclTZ
-        const eTz = duty.endTZ || duty.acclTZ || acclTZ
         setAddDutyDate(startOfDayInTimeZone(duty.start, calendarTZ))
-        setStartTime(formatHHmmInTZ(duty.start, sTz))
-        setEndDate(toDateInputValueInTZ(duty.end, eTz))
-        setEndTime(formatHHmmInTZ(duty.end, eTz))
-        setModalAcclTZ(duty.acclTZ || acclTZ)
-        setModalStartTZ(duty.startTZ || duty.acclTZ || acclTZ)
-        setModalEndTZ(duty.endTZ || duty.acclTZ || acclTZ)
-        loadPositioningFormFromDuty(duty)
       }
     } else if (date.getMonth() !== currentDate.getMonth()) {
       setAnimating(true)
@@ -810,14 +607,10 @@ function Calendar() {
     setShowAddDuty(true)
     setShowMenu(false)
     setAddDutyDate(date)
-    setEndDate(toDateInputValueInTZ(date, calendarTZ))
     setRestType('12h')
     setIsEdit(false)
     setEditEvent(null)
     setValidationMessage('')
-    setMaxDutyResult('')
-    setEndDateShouldBlink(false)
-    resetPositioningForm()
   }
 
   const handleAddDuty = () => {
@@ -832,22 +625,17 @@ function Calendar() {
 
     setIsEdit(true)
     setEditEvent(event)
-    const sTz = event.startTZ || event.acclTZ || acclTZ
-    const eTz = event.endTZ || event.acclTZ || acclTZ
     setAddDutyDate(startOfDayInTimeZone(event.start, calendarTZ))
-    setStartTime(formatHHmmInTZ(event.start, sTz))
-    setEndDate(toDateInputValueInTZ(event.end, eTz))
-    setEndTime(formatHHmmInTZ(event.end, eTz))
-    setModalAcclTZ(event.acclTZ || acclTZ)
-    setModalStartTZ(event.startTZ || event.acclTZ || acclTZ)
-    setModalEndTZ(event.endTZ || event.acclTZ || acclTZ)
-    loadPositioningFormFromDuty(event)
     const restEvent = events.find((e) => e.id === restIdForDuty(event.id))
     if (restEvent) {
       const restDuration = restEvent.requiredRestHours
         ?? (restEvent.end.getTime() - restEvent.start.getTime()) /
           (1000 * 60 * 60)
-      setRestType(restDuration === 10 ? '10+travel' : '12h')
+      setRestType(
+        restEvent.baseRestType === '10+travel' || restDuration === 10
+          ? '10+travel'
+          : '12h',
+      )
     } else {
       setRestType('12h')
     }
@@ -873,19 +661,11 @@ function Calendar() {
 
   const resetDutyForm = () => {
     setShowAddDuty(false)
-    setStartTime('')
-    setEndTime('')
-    setEndDate('')
-    setModalAcclTZ('')
-    setModalStartTZ('')
-    setModalEndTZ('')
+    setAddDutyDate(null)
     setRestType('12h')
     setIsEdit(false)
     setEditEvent(null)
     setValidationMessage('')
-    setMaxDutyResult('')
-    setEndDateShouldBlink(false)
-    resetPositioningForm()
   }
 
   const handleDutyFormSubmit = (payload: {
@@ -1082,12 +862,7 @@ function Calendar() {
 
   const isInRange = (date: Date) => {
     if (!showAddDuty || !addDutyDate) return false
-    const start = dayStartInCal(addDutyDate)
-    const end = endDate
-      ? startOfDayKeyInTimeZone(endDate, calendarTZ)
-      : start
-    const d = dayStartInCal(date)
-    return d.getTime() >= start.getTime() && d.getTime() <= end.getTime()
+    return dayStartInCal(date).getTime() === dayStartInCal(addDutyDate).getTime()
   }
 
   return (
