@@ -4,7 +4,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
 } from 'react'
 import { Link } from 'react-router-dom'
@@ -21,20 +20,20 @@ import {
   titleForEventKind,
 } from './domain/types'
 import {
-  applyTenPlusTravelIfRestCompressed,
   createId,
   eventsOnLocalDay,
   findDutyOnDate,
   findEditableEventOnDate,
   findEditableEventsOnDate,
   previewTenPlusTravelCompression,
-  recomputeAfterDutyChange,
-  recomputeAfterDutyDelete,
-  removeDutyAndRelated,
   restIdForDuty,
   summarizeViolatedLnrs,
   type TenPlusTravelCompression,
 } from './domain/events'
+import {
+  applyScheduleMutation,
+  type ScheduleContext,
+} from './domain/schedule-pipeline'
 import {
   freeEventFromProposal,
   proposeFreeBlocks,
@@ -64,7 +63,6 @@ import {
   eventsOverlap,
   wouldExceedWeeklyLimit,
 } from './domain/regulations'
-import { CalendarDayCell } from './CalendarDayCell'
 import DutyForm, { type EventFormSubmitPayload } from './DutyForm'
 import {
   evaluate70029,
@@ -80,7 +78,11 @@ import {
   zonedWallTime,
 } from './domain/time'
 import { useSettings } from './features/settings/SettingsContext'
-import { scheduleTravelRestReminders } from './shared/notifications'
+import {
+  bootstrapNotifications,
+  scheduleTravelRestReminders,
+  setNotificationHandler,
+} from './shared/notifications'
 import {
   clearDeletedEvents,
   loadDeletedEvents,
@@ -93,8 +95,12 @@ import {
 } from './shared/storage'
 import SettingsPanel from './shared/ui/SettingsPanel'
 import ThemeToggle from './shared/ui/ThemeToggle'
+import AppDialog from './shared/ui/AppDialog'
 import { IconClose, IconSettings } from './shared/ui/icons'
 import CalendarImportPanel from './features/import/CalendarImportPanel'
+import { useAppDialog } from './features/calendar/useAppDialog'
+import CalendarMonthGrid from './features/calendar/CalendarMonthGrid'
+import CalendarDayDetails from './features/calendar/CalendarDayDetails'
 
 function Calendar() {
   const {
@@ -193,6 +199,30 @@ function Calendar() {
   const [validationMessage, setValidationMessage] = useState('')
   const [tenPlusNotice, setTenPlusNotice] =
     useState<TenPlusTravelCompression | null>(null)
+  const {
+    dialog: appDialog,
+    showAlert,
+    showConfirm,
+    showChoice,
+  } = useAppDialog()
+
+  const scheduleCtx = useCallback((): ScheduleContext => {
+    return {
+      regulator,
+      homeBaseTZ,
+      globalAcclTZ: acclTZ,
+      timeFreeOption,
+    }
+  }, [regulator, homeBaseTZ, acclTZ, timeFreeOption])
+
+  // Durable notification bootstrap + in-app delivery
+  useEffect(() => {
+    bootstrapNotifications()
+    setNotificationHandler((n) => {
+      void showAlert(n.title, n.body)
+    })
+    return () => setNotificationHandler(null)
+  }, [showAlert])
 
   useEffect(() => {
     // Avoid rewriting localStorage on mount with an identical payload
@@ -562,18 +592,29 @@ function Calendar() {
       const dayDate = dateByStartMs.get(dayStartMs) ?? dayStart
       const dayEvents = eventsOnLocalDay(events, dayDate, calendarTZ)
       const lnrMsg = summarizeViolatedLnrs(dayEvents)
-      if (lnrMsg) alert(lnrMsg)
-      else
-        alert(
-          'Violation: duty period overlaps a rest period, or rest requirements are not met.',
+      if (lnrMsg) {
+        showAlert('Rest requirement', lnrMsg)
+      } else {
+        showAlert(
+          'Violation',
+          'Duty period overlaps a rest period, or rest requirements are not met.',
         )
+      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [calendarTZ, report70029.violations, events, dateByStartMs],
+    [calendarTZ, report70029.violations, events, dateByStartMs, showAlert],
   )
 
   const getDayActions = (date: Date) => {
     const editable = findEditableEventsOnDate(events, date)
+    if (editable.length > 1) {
+      return [
+        'Edit Event…',
+        'Delete Event…',
+        'Add Event',
+        'Suggest Free Time',
+      ]
+    }
     if (editable.length > 0) {
       return ['Edit Event', 'Delete Event', 'Add Event', 'Suggest Free Time']
     }
@@ -714,10 +755,7 @@ function Calendar() {
     )
   }
 
-  const handleEditDuty = () => {
-    const event = resolveActionEvent()
-    if (!event) return
-
+  const openEditForEvent = (event: DutyEvent) => {
     setIsEdit(true)
     setEditEvent(event)
     setAddDutyDate(startOfDayInTimeZone(event.start, calendarTZ))
@@ -740,22 +778,64 @@ function Calendar() {
     setValidationMessage('')
   }
 
-  const handleDeleteDuty = () => {
-    const event = resolveActionEvent()
-    if (!event) return
+  const deleteEventById = (event: DutyEvent) => {
     if (event.type === 'duty') {
-      setEvents((prev) =>
-        recomputeAfterDutyDelete(
-          removeDutyAndRelated(prev, event),
-          regulator,
-          homeBaseTZ,
-          acclTZ,
-        ),
+      const result = applyScheduleMutation(
+        events,
+        { type: 'delete_duty', dutyId: event.id },
+        scheduleCtx(),
       )
+      setEvents(result.events)
     } else {
       setEvents((prev) => prev.filter((e) => e.id !== event.id))
     }
     clearDaySelection()
+  }
+
+  /** Multi-duty day: let user pick which event to edit/delete. */
+  const pickEditableOnDay = async (
+    date: Date,
+    mode: 'edit' | 'delete',
+  ): Promise<void> => {
+    const list = findEditableEventsOnDate(events, date)
+    if (list.length === 0) return
+    if (list.length === 1) {
+      if (mode === 'edit') openEditForEvent(list[0])
+      else deleteEventById(list[0])
+      return
+    }
+    const choices = list.map((e) => {
+      const t = e.start.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+      return {
+        id: e.id,
+        label: `${e.title || e.type} · ${t}`,
+      }
+    })
+    const chosen = await showChoice(
+      mode === 'edit' ? 'Edit which event?' : 'Delete which event?',
+      'This day has more than one event.',
+      choices,
+    )
+    if (!chosen) return
+    const event = list.find((e) => e.id === chosen)
+    if (!event) return
+    if (mode === 'edit') openEditForEvent(event)
+    else deleteEventById(event)
+  }
+
+  const handleEditDuty = () => {
+    const event = resolveActionEvent()
+    if (!event) return
+    openEditForEvent(event)
+  }
+
+  const handleDeleteDuty = () => {
+    const event = resolveActionEvent()
+    if (!event) return
+    deleteEventById(event)
   }
 
   const resetDutyForm = () => {
@@ -800,47 +880,57 @@ function Calendar() {
         )
         .map((v) => v.detail)
         .join('\n\n')
-      alert(
-        `Time free from duty warning (CAR 700.29):\n\n${soft}\n\nUse “Suggest Free Time” from the day menu to auto-schedule days free from duty.`,
+      showAlert(
+        'Time free from duty (CAR 700.29)',
+        `${soft}\n\nUse “Suggest Free Time” from the day menu to auto-schedule days free from duty.`,
       )
     }
     return true
   }
 
+  /**
+   * Official mutation path:
+   * mutate → recomputeScheduleCompliance → 10+travel → evaluate70029 → setState/persist
+   */
   const saveDutyEvent = (
     dutyEvent: DutyEvent,
     rt: RestType,
     baseEvents: DutyEvent[],
   ) => {
-    setEvents(() => {
-      let next = recomputeAfterDutyChange(
-        baseEvents,
-        dutyEvent,
-        regulator,
-        homeBaseTZ,
-        dutyEvent.acclTZ || acclTZ,
-        rt,
-      )
-      const compressed = applyTenPlusTravelIfRestCompressed(
-        next,
-        dutyEvent.id,
-        regulator,
-        homeBaseTZ,
-        dutyEvent.acclTZ || acclTZ,
-      )
-      next = compressed.events
-      if (compressed.notice) {
-        // Defer modal to after state commit
-        queueMicrotask(() => {
-          setTenPlusNotice(compressed.notice)
-          // 10+travel rules: offer release / hotel-timing reminders for prior FDP
-          scheduleTravelRestReminders(compressed.notice!.previousRelease)
+    const result = applyScheduleMutation(
+      baseEvents,
+      {
+        type: 'upsert_duty',
+        duty: dutyEvent,
+        restType: rt,
+        applyTenPlusTravel: true,
+      },
+      {
+        ...scheduleCtx(),
+        globalAcclTZ: dutyEvent.acclTZ || acclTZ,
+      },
+    )
+    setEvents(result.events)
+    const tenPlus = result.notices.find((n) => n.kind === 'ten_plus_travel')
+    if (tenPlus && tenPlus.kind === 'ten_plus_travel') {
+      queueMicrotask(() => {
+        setTenPlusNotice(tenPlus.compression)
+        void scheduleTravelRestReminders(tenPlus.compression.previousRelease, {
+          askUser: () =>
+            showConfirm(
+              '10+travel reminders',
+              'Notify you 30 minutes after the previous release to confirm hotel / rest location timing?',
+              { confirmLabel: 'Yes, remind me', cancelLabel: 'No thanks' },
+            ),
         })
-      }
-      const lnrMsg = summarizeViolatedLnrs(next)
-      if (lnrMsg) alert(lnrMsg)
-      return next
-    })
+      })
+    }
+    const lnrMsg = summarizeViolatedLnrs(result.events)
+    if (lnrMsg) {
+      queueMicrotask(() => {
+        void showAlert('Rest requirement', lnrMsg)
+      })
+    }
   }
 
   const acknowledgeTenPlusNotice = () => {
@@ -853,12 +943,12 @@ function Calendar() {
    * do not flag the duty as violated — saveDutyEvent will apply the conversion
    * and show the Got it notice.
    */
-  const resolveRestOverlapForDuty = (
+  const resolveRestOverlapForDuty = async (
     duty: DutyEvent,
     schedule: DutyEvent[],
     restTypeForDuty: RestType,
     dutyAccl: string,
-  ): { abort: boolean; markViolated: boolean } => {
+  ): Promise<{ abort: boolean; markViolated: boolean }> => {
     const overlapsRest = schedule.some(
       (e) =>
         e.type === 'rest' &&
@@ -880,11 +970,16 @@ function Calendar() {
       return { abort: false, markViolated: false }
     }
 
-    if (
-      confirm(
-        'Duty period overlaps with a rest period. Click OK to edit the duty, or Cancel to disregard and add anyway.',
-      )
-    ) {
+    const stayAndEdit = await showConfirm(
+      'Overlaps rest period',
+      'This duty overlaps a rest period. Stay on the form to edit times, or add it anyway (flagged).',
+      {
+        confirmLabel: 'Stay and edit',
+        cancelLabel: 'Add anyway',
+        danger: false,
+      },
+    )
+    if (stayAndEdit) {
       return { abort: true, markViolated: false }
     }
     return { abort: false, markViolated: true }
@@ -895,10 +990,10 @@ function Calendar() {
    * - forceNew: always insert (clone path; never replace editEvent)
    * - closeOnSuccess: close the form after a successful save (false for clone)
    */
-  const commitDutyFormPayload = (
+  const commitDutyFormPayload = async (
     payload: EventFormSubmitPayload,
     opts: { forceNew?: boolean; closeOnSuccess?: boolean } = {},
-  ) => {
+  ): Promise<boolean> => {
     const forceNew = opts.forceNew === true
     const closeOnSuccess = opts.closeOnSuccess !== false
     const treatingAsEdit = !forceNew && isEdit && !!editEvent
@@ -950,26 +1045,31 @@ function Calendar() {
         endTZ: partial.endTZ,
         workFactor: defaultWorkFactorForKind(eventKind),
       }
-      setEvents((prev) => {
-        let without = prev
-        if (treatingAsEdit && editEvent) {
-          // Drop the edited event and any managed rest if it was a duty
-          without = prev.filter(
-            (e) =>
-              e.id !== editEvent.id &&
-              e.id !== restIdForDuty(editEvent.id),
-          )
-          if (editEvent.type === 'duty') {
-            return recomputeAfterDutyDelete(
-              without,
-              regulator,
-              homeBaseTZ,
-              acclTZ,
-            ).concat(aux)
-          }
-        }
-        return [...without, aux]
-      })
+      if (treatingAsEdit && editEvent && editEvent.type === 'duty') {
+        // Convert duty → reserve/standby: delete duty via pipeline then append aux
+        const afterDelete = applyScheduleMutation(
+          events,
+          { type: 'delete_duty', dutyId: editEvent.id },
+          scheduleCtx(),
+        )
+        const next = applyScheduleMutation(
+          [...afterDelete.events, aux],
+          { type: 'recompute_only' },
+          scheduleCtx(),
+        )
+        setEvents(next.events)
+      } else {
+        const without =
+          treatingAsEdit && editEvent
+            ? events.filter((e) => e.id !== editEvent.id)
+            : events
+        const next = applyScheduleMutation(
+          [...without, aux],
+          { type: 'recompute_only' },
+          scheduleCtx(),
+        )
+        setEvents(next.events)
+      }
       if (closeOnSuccess) resetDutyForm()
       return true
     }
@@ -1039,27 +1139,35 @@ function Calendar() {
         (e) => e.id !== editEvent.id && e.id !== restIdForDuty(editEvent.id),
       )
       const candidate = buildDuty(editEvent.id)
-      const overlap = resolveRestOverlapForDuty(
+      const overlap = await resolveRestOverlapForDuty(
         candidate,
         without,
         rt,
         dutyAccl,
       )
       if (overlap.abort) return false
+      // Validate 10+travel reminders BEFORE persist (Phase 1)
+      if (rt === '10+travel' && eventKind === 'flight_duty') {
+        const result = await scheduleTravelRestReminders(end, {
+          askUser: () =>
+            showConfirm(
+              '10+travel reminders',
+              'Notify you 30 minutes after release to confirm hotel / rest location timing?',
+              { confirmLabel: 'Yes, remind me', cancelLabel: 'No thanks' },
+            ),
+        })
+        if (!result.ok) {
+          setValidationMessage(
+            (result.hoursSinceRelease ?? 0) > 15
+              ? 'More than 15 hours have passed since the release time. Please update the release time to reflect the actual time at the rest location.'
+              : 'The release time has already passed. Please modify the release time of the duty.',
+          )
+          return false
+        }
+      }
       const updatedDuty = buildDuty(editEvent.id, overlap.markViolated)
       if (updatedDuty.type === 'duty') {
         saveDutyEvent(updatedDuty, rt, [...without, updatedDuty])
-        if (rt === '10+travel' && eventKind === 'flight_duty') {
-          const result = scheduleTravelRestReminders(end)
-          if (!result.ok) {
-            setValidationMessage(
-              (result.hoursSinceRelease ?? 0) > 15
-                ? 'More than 15 hours have passed since the release time. Please update the release time to reflect the actual time at the rest location.'
-                : 'The release time has already passed. Please modify the release time of the duty.',
-            )
-            return false
-          }
-        }
       }
       if (closeOnSuccess) resetDutyForm()
       return true
@@ -1084,25 +1192,23 @@ function Calendar() {
       const candidate = buildDuty(dutyId)
       // Keep unused var lint-free: prefixPreview was for future weekly checks
       void prefixPreview
-      const overlap = resolveRestOverlapForDuty(
+      const overlap = await resolveRestOverlapForDuty(
         candidate,
         events,
         rt,
         dutyAccl,
       )
       if (overlap.abort) return false
-      const newDuty = buildDuty(dutyId, overlap.markViolated)
-      saveDutyEvent(newDuty, rt, [...events, rsv, newDuty])
       if (rt === '10+travel') {
-        const result = scheduleTravelRestReminders(end)
+        const result = await scheduleTravelRestReminders(end, {
+          askUser: () =>
+            showConfirm(
+              '10+travel reminders',
+              'Notify you 30 minutes after release to confirm hotel / rest location timing?',
+              { confirmLabel: 'Yes, remind me', cancelLabel: 'No thanks' },
+            ),
+        })
         if (!result.ok) {
-          // Clone keeps the open form; normal add may switch into edit on the new duty
-          if (!forceNew) {
-            setIsEdit(true)
-            setEditEvent(newDuty)
-            setRestType('10+travel')
-            setShowAddDuty(true)
-          }
           setValidationMessage(
             (result.hoursSinceRelease ?? 0) > 15
               ? 'More than 15 hours have passed since the original release time. Please update the release time.'
@@ -1111,27 +1217,32 @@ function Calendar() {
           return false
         }
       }
+      const newDuty = buildDuty(dutyId, overlap.markViolated)
+      saveDutyEvent(newDuty, rt, [...events, rsv, newDuty])
       if (closeOnSuccess) resetDutyForm()
       return true
     }
 
     const dutyId = createId()
     const candidate = buildDuty(dutyId)
-    const overlap = resolveRestOverlapForDuty(candidate, events, rt, dutyAccl)
+    const overlap = await resolveRestOverlapForDuty(
+      candidate,
+      events,
+      rt,
+      dutyAccl,
+    )
     if (overlap.abort) return false
 
-    const newEvent = buildDuty(dutyId, overlap.markViolated)
-    saveDutyEvent(newEvent, rt, [...events, newEvent])
-
     if (rt === '10+travel' && eventKind === 'flight_duty') {
-      const result = scheduleTravelRestReminders(end)
+      const result = await scheduleTravelRestReminders(end, {
+        askUser: () =>
+          showConfirm(
+            '10+travel reminders',
+            'Notify you 30 minutes after release to confirm hotel / rest location timing?',
+            { confirmLabel: 'Yes, remind me', cancelLabel: 'No thanks' },
+          ),
+      })
       if (!result.ok) {
-        if (!forceNew) {
-          setIsEdit(true)
-          setEditEvent(newEvent)
-          setRestType('10+travel')
-          setShowAddDuty(true)
-        }
         setValidationMessage(
           (result.hoursSinceRelease ?? 0) > 15
             ? 'More than 15 hours have passed since the original release time. Please update the release time.'
@@ -1141,16 +1252,24 @@ function Calendar() {
       }
     }
 
+    const newEvent = buildDuty(dutyId, overlap.markViolated)
+    saveDutyEvent(newEvent, rt, [...events, newEvent])
+
     if (closeOnSuccess) resetDutyForm()
     return true
   }
 
   const handleDutyFormSubmit = (payload: EventFormSubmitPayload) => {
-    commitDutyFormPayload(payload, { forceNew: false, closeOnSuccess: true })
+    void commitDutyFormPayload(payload, {
+      forceNew: false,
+      closeOnSuccess: true,
+    })
   }
 
   /** Clone always inserts a new event and leaves the form open. */
-  const handleDutyFormClone = (payload: EventFormSubmitPayload): boolean => {
+  const handleDutyFormClone = (
+    payload: EventFormSubmitPayload,
+  ): boolean | Promise<boolean> => {
     return commitDutyFormPayload(payload, {
       forceNew: true,
       closeOnSuccess: false,
@@ -1260,67 +1379,30 @@ function Calendar() {
                     : `Local · ${calendarTZ.replace(/_/g, ' ')}`}
             </p>
           </div>
-          <div className="calendar-container">
-            <div
-              className="calendar-grid"
-              style={
-                {
-                  ['--day-min-h']: `${sharedDayMinRem}rem`,
-                  ['--week-rows']: String(weekRows),
-                } as CSSProperties
-              }
-            >
-              {weekDayLabels.map((day) => (
-                <div key={day} className="day-header">
-                  {day}
-                </div>
-              ))}
-              {days.map((date: Date) => {
-                const dayKey = toDateInputValueInTZ(date, calendarTZ)
-                const layout = scheduleLayout.byKey.get(dayKey)
-                if (!layout) return null
-                const dayStartMs = layout.dayStartMs
-                const isToday =
-                  dayStartMs === dayStartInCal(new Date()).getTime()
-                const isSelected =
-                  !!selectedDate &&
-                  dayStartInCal(selectedDate).getTime() === dayStartMs
-                return (
-                  <CalendarDayCell
-                    key={dayKey}
-                    layout={layout}
-                    isSelected={isSelected}
-                    isToday={isToday}
-                    isInRange={isInRange(date)}
-                    onDayClick={handleDayClickMs}
-                    onDayPressStart={handleDayPressStartMs}
-                    onDayPressEnd={handleDayPressEnd}
-                    onBarClick={handleBarClick}
-                    onBarPressStart={handleBarPressStart}
-                    onBarPressEnd={handleBarPressEnd}
-                    onMarkerClick={handleMarkerClick}
-                    onViolationClick={handleViolationClick}
-                  />
-                )
-              })}
-            </div>
-          </div>
+          <CalendarMonthGrid
+            days={days}
+            weekDayLabels={weekDayLabels}
+            weekRows={weekRows}
+            sharedDayMinRem={sharedDayMinRem}
+            scheduleLayout={scheduleLayout}
+            calendarTZ={calendarTZ}
+            selectedDate={selectedDate}
+            dayStartInCal={dayStartInCal}
+            isInRange={isInRange}
+            onDayClickMs={handleDayClickMs}
+            onDayPressStartMs={handleDayPressStartMs}
+            onDayPressEnd={handleDayPressEnd}
+            onBarClick={handleBarClick}
+            onBarPressStart={handleBarPressStart}
+            onBarPressEnd={handleBarPressEnd}
+            onMarkerClick={handleMarkerClick}
+            onViolationClick={handleViolationClick}
+          />
           {selectedDate && (
-            <div className="day-details" role="region" aria-label="Day details">
-              <div className="day-details-header">
-                <h3>{selectedDate.toDateString()}</h3>
-                <button
-                  type="button"
-                  className="day-details-close"
-                  aria-label="Close day details"
-                  onClick={() => clearDaySelection()}
-                >
-                  <IconClose size={18} />
-                </button>
-              </div>
-              <p className="day-details-events">
-                <span className="day-details-events-label">Events</span>
-                {events
+            <CalendarDayDetails
+              selectedDate={selectedDate}
+              eventTitles={
+                events
                   .filter(
                     (e) =>
                       e.start.toDateString() === selectedDate.toDateString() ||
@@ -1328,38 +1410,21 @@ function Calendar() {
                         e.end > dayStartInCal(selectedDate)),
                   )
                   .map((e) => e.title)
-                  .join(', ') || 'None'}
-              </p>
-              <div className="day-details-actions">
-                {getDayActions(selectedDate).map((action) => {
-                  const isDelete = action === 'Delete Event'
-                  const isPrimary =
-                    action === 'Add Event' || action === 'Edit Event'
-                  return (
-                    <button
-                      type="button"
-                      key={action}
-                      className={
-                        isDelete
-                          ? 'day-details-btn day-details-btn-danger'
-                          : isPrimary
-                            ? 'day-details-btn day-details-btn-primary'
-                            : 'day-details-btn day-details-btn-secondary'
-                      }
-                      onClick={() => {
-                        if (action === 'Add Event') handleAddDuty()
-                        else if (action === 'Edit Event') handleEditDuty()
-                        else if (action === 'Delete Event') handleDeleteDuty()
-                        else if (action === 'Suggest Free Time')
-                          openFreeSuggestions()
-                      }}
-                    >
-                      {action}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
+                  .join(', ') || 'None'
+              }
+              actions={getDayActions(selectedDate)}
+              onClose={() => clearDaySelection()}
+              onAction={(action) => {
+                if (action === 'Add Event') handleAddDuty()
+                else if (action === 'Edit Event') handleEditDuty()
+                else if (action === 'Edit Event…')
+                  void pickEditableOnDay(selectedDate, 'edit')
+                else if (action === 'Delete Event') handleDeleteDuty()
+                else if (action === 'Delete Event…')
+                  void pickEditableOnDay(selectedDate, 'delete')
+                else if (action === 'Suggest Free Time') openFreeSuggestions()
+              }}
+            />
           )}
 
           {showMenu && menuDate && (
@@ -1646,7 +1711,12 @@ function Calendar() {
                       style={{ marginTop: '0.5rem' }}
                       onClick={() => {
                         const free = freeEventFromProposal(p, acclTZ)
-                        setEvents((prev) => [...prev, free])
+                        const result = applyScheduleMutation(
+                          [...events, free],
+                          { type: 'recompute_only' },
+                          scheduleCtx(),
+                        )
+                        setEvents(result.events)
                         setShowFreeProposals(false)
                         setFreeProposals([])
                       }}
@@ -1773,15 +1843,21 @@ function Calendar() {
                   type="button"
                   className="info-sheet-btn info-sheet-btn-danger"
                   onClick={() => {
-                    if (
-                      confirm(
-                        'Delete this rest event from the calendar?',
+                    void (async () => {
+                      const ok = await showConfirm(
+                        'Delete rest event?',
+                        'Remove this rest event from the calendar?',
+                        {
+                          confirmLabel: 'Delete',
+                          cancelLabel: 'Cancel',
+                          danger: true,
+                        },
                       )
-                    ) {
+                      if (!ok) return
                       const id = infoSheet.eventId
                       setEvents((prev) => prev.filter((e) => e.id !== id))
                       setInfoSheet(null)
-                    }
+                    })()
                   }}
                 >
                   Delete
@@ -1806,6 +1882,42 @@ function Calendar() {
             </footer>
           </div>
         </div>
+      )}
+
+      {appDialog && (
+        <AppDialog
+          open
+          kind={appDialog.kind}
+          title={appDialog.title}
+          message={appDialog.message}
+          danger={
+            appDialog.kind === 'confirm' ? !!appDialog.danger : false
+          }
+          confirmLabel={
+            appDialog.kind === 'alert' || appDialog.kind === 'confirm'
+              ? appDialog.confirmLabel
+              : undefined
+          }
+          cancelLabel={
+            appDialog.kind === 'confirm'
+              ? appDialog.cancelLabel
+              : appDialog.kind === 'choice'
+                ? 'Cancel'
+                : undefined
+          }
+          choices={appDialog.kind === 'choice' ? appDialog.choices : undefined}
+          onConfirm={
+            appDialog.kind === 'choice'
+              ? () => appDialog.onCancel()
+              : appDialog.onConfirm
+          }
+          onCancel={
+            appDialog.kind === 'alert' ? undefined : appDialog.onCancel
+          }
+          onChoose={
+            appDialog.kind === 'choice' ? appDialog.onChoose : undefined
+          }
+        />
       )}
     </>
   )

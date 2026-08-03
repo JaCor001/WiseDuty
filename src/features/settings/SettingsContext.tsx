@@ -8,7 +8,6 @@ import {
   type ReactNode,
 } from 'react'
 import type {
-  AvgSectorTime,
   CalendarTimeReference,
   DutyTimingBuffers,
   ImportReportMode,
@@ -61,10 +60,6 @@ interface SettingsContextValue {
   setReferenceTZ: (value: string) => void
   acclTZ: string
   setAcclTZ: (value: string) => void
-  sectors: number
-  setSectors: (value: number) => void
-  avgSectorTime: AvgSectorTime
-  setAvgSectorTime: (value: AvgSectorTime) => void
   timeFreeOption: TimeFreeOption
   setTimeFreeOption: (value: TimeFreeOption) => void
   calendarTimeRef: CalendarTimeReference
@@ -135,15 +130,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   )
   const [acclTZ, setAcclTZState] = useState(() =>
     readString(STORAGE_KEYS.acclTZ, defaultTimeZone()),
-  )
-  const [sectors, setSectorsState] = useState(() => {
-    const n = Number(readString(STORAGE_KEYS.lastSectors, '1'))
-    return Number.isFinite(n) && n >= 1 ? n : 1
-  })
-  const [avgSectorTime, setAvgSectorTimeState] = useState<AvgSectorTime>(
-    () =>
-      (readString(STORAGE_KEYS.lastAvgSectorTime, '<30') as AvgSectorTime) ||
-      '<30',
   )
   const [timeFreeOption, setTimeFreeOptionState] = useState<TimeFreeOption>(
     () => {
@@ -229,16 +215,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     writeString(STORAGE_KEYS.acclTZ, value)
   }, [])
 
-  const setSectors = useCallback((value: number) => {
-    setSectorsState(value)
-    writeString(STORAGE_KEYS.lastSectors, String(value))
-  }, [])
-
-  const setAvgSectorTime = useCallback((value: AvgSectorTime) => {
-    setAvgSectorTimeState(value)
-    writeString(STORAGE_KEYS.lastAvgSectorTime, value)
-  }, [])
-
   const setTimeFreeOption = useCallback((value: TimeFreeOption) => {
     setTimeFreeOptionState(value)
     writeString(STORAGE_KEYS.timeFreeOption, value)
@@ -304,10 +280,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setReferenceTZ,
       acclTZ,
       setAcclTZ,
-      sectors,
-      setSectors,
-      avgSectorTime,
-      setAvgSectorTime,
       timeFreeOption,
       setTimeFreeOption,
       calendarTimeRef,
@@ -340,10 +312,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setReferenceTZ,
       acclTZ,
       setAcclTZ,
-      sectors,
-      setSectors,
-      avgSectorTime,
-      setAvgSectorTime,
       timeFreeOption,
       setTimeFreeOption,
       calendarTimeRef,

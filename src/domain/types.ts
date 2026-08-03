@@ -339,8 +339,16 @@ export interface DutyEvent {
   }
 }
 
+/**
+ * Schema version for stored schedule payloads (Phase 4).
+ * Bump when StoredDutyEvent shape changes and add a migrator in storage.ts.
+ */
+export const SCHEDULE_SCHEMA_VERSION = 1 as const
+
 /** Serializable form stored in localStorage */
 export interface StoredDutyEvent {
+  /** Optional; missing treated as version 1 on load. */
+  schemaVersion?: number
   id: string
   title: string
   start: string
@@ -396,8 +404,6 @@ export interface AppSettings {
   /** Home base time zone (CAR 700.42). */
   referenceTZ: string
   acclTZ: string
-  lastSectors: number
-  lastAvgSectorTime: AvgSectorTime
   timeFreeOption: TimeFreeOption
   /** Calendar grid / bar time reference mode. */
   calendarTimeRef: CalendarTimeReference
@@ -421,8 +427,6 @@ export const STORAGE_KEYS = {
   regulator: 'regulator',
   referenceTZ: 'referenceTZ',
   acclTZ: 'lastAcclTZ',
-  lastSectors: 'lastSectors',
-  lastAvgSectorTime: 'lastAvgSectorTime',
   timeFreeOption: 'timeFreeOption',
   calendarTimeRef: 'calendarTimeRef',
   calendarDisplayTZ: 'calendarDisplayTZ',

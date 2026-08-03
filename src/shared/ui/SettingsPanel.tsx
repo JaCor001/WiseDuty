@@ -9,6 +9,7 @@ import type {
 } from '../../domain/types'
 import { useSettings } from '../../features/settings/SettingsContext'
 import TimeZoneSelector from './TimeZoneSelector'
+import AppDialog from './AppDialog'
 import './SettingsPanel.css'
 
 export type DeleteEventsScope = 'month' | 'all'
@@ -76,6 +77,14 @@ export default function SettingsPanel({
   const canPurge = deletedEventCount > 0 && Boolean(onPurgeDeletedEvents)
   const showCalendarData = Boolean(onDeleteEvents)
 
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string
+    message: string
+    danger?: boolean
+    confirmLabel?: string
+    onConfirm: () => void
+  } | null>(null)
+
   const handleDelete = (scope: DeleteEventsScope) => {
     if (!onDeleteEvents) return
     const scopeLabel =
@@ -84,27 +93,30 @@ export default function SettingsPanel({
           ? `all events in ${deleteMonthLabel}`
           : 'all events in the current month'
         : 'ALL events on your calendar'
-    if (
-      !confirm(
-        `Delete ${scopeLabel}? You can restore them later from Settings.`,
-      )
-    ) {
-      return
-    }
-    onDeleteEvents(scope)
-    setShowDeleteOptions(false)
+    setConfirmDialog({
+      title: 'Delete events?',
+      message: `Delete ${scopeLabel}? You can restore them later from Settings.`,
+      danger: true,
+      confirmLabel: 'Delete',
+      onConfirm: () => {
+        onDeleteEvents(scope)
+        setShowDeleteOptions(false)
+        setConfirmDialog(null)
+      },
+    })
   }
 
   const handleRestore = () => {
     if (!canRestore || !onRestoreDeletedEvents) return
-    if (
-      !confirm(
-        `Restore ${deletedEventCount} deleted event${deletedEventCount === 1 ? '' : 's'}?`,
-      )
-    ) {
-      return
-    }
-    onRestoreDeletedEvents()
+    setConfirmDialog({
+      title: 'Restore deleted events?',
+      message: `Restore ${deletedEventCount} deleted event${deletedEventCount === 1 ? '' : 's'}?`,
+      confirmLabel: 'Restore',
+      onConfirm: () => {
+        onRestoreDeletedEvents()
+        setConfirmDialog(null)
+      },
+    })
   }
 
   const openPurgeConfirm = () => {
@@ -366,12 +378,21 @@ export default function SettingsPanel({
               value={regulator}
               onChange={(e) => setRegulator(e.target.value as Regulator)}
             >
-              <option value="TC">CAR 705 (Canada)</option>
-              <option value="FAA">FAA (USA)</option>
-              <option value="EASA">EASA (Europe)</option>
-              <option value="Australia">CASA (Australia)</option>
+              <option value="TC">CAR 705 (Canada) — full fidelity</option>
+              <option value="FAA">FAA (USA) — limited / experimental</option>
+              <option value="EASA">EASA (Europe) — limited / experimental</option>
+              <option value="Australia">
+                CASA (Australia) — limited / experimental
+              </option>
             </select>
           </label>
+          {regulator !== 'TC' && (
+            <p className="settings-section-hint">
+              Non-TC regimes use simplified max-FDP ceilings and do not run full
+              CAR 700.29 time-free evaluation. Prefer TC for production
+              compliance checks.
+            </p>
+          )}
 
           <label>
             Home Base Time Zone
@@ -652,6 +673,20 @@ export default function SettingsPanel({
             </button>
           </section>
         </div>
+      )}
+
+      {confirmDialog && (
+        <AppDialog
+          open
+          kind="confirm"
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          danger={confirmDialog.danger}
+          confirmLabel={confirmDialog.confirmLabel ?? 'OK'}
+          cancelLabel="Cancel"
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
       )}
 
       {/* Portal to body: slide-menu overflow/stacking would clip and blur a nested overlay */}

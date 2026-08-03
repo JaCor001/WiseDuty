@@ -1,54 +1,177 @@
 /**
- * Notification port — web uses delayed alerts; native can swap to Capacitor later.
- * Timeouts do not survive backgrounding; documented limitation for P0.
+ * Durable notification port for 10+travel release reminders.
+ *
+ * - Persists pending notifications in localStorage (survives reload / kill+reopen).
+ * - On bootstrap, restores timers for future items; fires overdue immediately.
+ * - Uses browser Notification API when permission is granted.
+ * - Falls back to in-app handler (register via setNotificationHandler).
+ *
+ * Native Capacitor LocalNotifications can be wired later without changing the API.
  */
 
-const timers = new Set<ReturnType<typeof setTimeout>>()
+const STORAGE_KEY = 'wiseduty.pendingNotifications.v1'
 
-export function clearScheduledNotifications(): void {
-  timers.forEach((id) => clearTimeout(id))
-  timers.clear()
+export interface PendingNotification {
+  id: string
+  fireAt: number
+  title: string
+  body: string
+  releaseAt?: string
 }
 
-function schedule(ms: number, fn: () => void): void {
-  const id = setTimeout(() => {
-    timers.delete(id)
-    fn()
-  }, Math.max(0, ms))
-  timers.add(id)
+type NotifyHandler = (n: PendingNotification) => void
+
+const activeTimers = new Map<string, ReturnType<typeof setTimeout>>()
+let onNotify: NotifyHandler | null = null
+let bootstrapped = false
+
+function loadPending(): PendingNotification[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as PendingNotification[]
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function savePending(list: PendingNotification[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(list))
+  } catch {
+    // quota / private mode
+  }
+}
+
+function removePending(id: string): void {
+  savePending(loadPending().filter((n) => n.id !== id))
+  const t = activeTimers.get(id)
+  if (t) {
+    clearTimeout(t)
+    activeTimers.delete(id)
+  }
+}
+
+function deliver(n: PendingNotification): void {
+  removePending(n.id)
+
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    try {
+      new Notification(n.title, { body: n.body, tag: n.id })
+    } catch {
+      // ignore
+    }
+  }
+
+  onNotify?.(n)
+}
+
+function armTimer(n: PendingNotification): void {
+  if (activeTimers.has(n.id)) return
+  const delay = n.fireAt - Date.now()
+  if (delay <= 0) {
+    deliver(n)
+    return
+  }
+  // setTimeout max ~24.8 days in some engines; re-arm if farther out
+  const chunk = Math.min(delay, 24 * 60 * 60 * 1000)
+  const t = setTimeout(() => {
+    activeTimers.delete(n.id)
+    if (n.fireAt <= Date.now()) deliver(n)
+    else armTimer(n)
+  }, chunk)
+  activeTimers.set(n.id, t)
+}
+
+function enqueue(n: PendingNotification): void {
+  const list = loadPending().filter((x) => x.id !== n.id)
+  list.push(n)
+  list.sort((a, b) => a.fireAt - b.fireAt)
+  savePending(list)
+  armTimer(n)
+}
+
+/** Register UI handler for in-app dialog when a notification fires. */
+export function setNotificationHandler(handler: NotifyHandler | null): void {
+  onNotify = handler
+}
+
+/** Call once on app load to restore durable timers from localStorage. */
+export function bootstrapNotifications(): void {
+  if (bootstrapped) return
+  bootstrapped = true
+  const now = Date.now()
+  for (const n of loadPending()) {
+    if (n.fireAt <= now) deliver(n)
+    else armTimer(n)
+  }
+}
+
+export function clearScheduledNotifications(): void {
+  activeTimers.forEach((id) => clearTimeout(id))
+  activeTimers.clear()
+  savePending([])
+}
+
+export function listPendingNotifications(): PendingNotification[] {
+  return loadPending()
+}
+
+async function ensureWebPermission(): Promise<boolean> {
+  if (typeof Notification === 'undefined') return false
+  if (Notification.permission === 'granted') return true
+  if (Notification.permission === 'denied') return false
+  try {
+    const p = await Notification.requestPermission()
+    return p === 'granted'
+  } catch {
+    return false
+  }
 }
 
 /**
- * Schedule 10+travel release reminders relative to duty end.
- * Returns false if release time is already in the past (caller should prompt edit).
+ * Schedule 10+travel release reminders relative to prior FDP release.
+ * Returns false if release is already in the past.
  */
-export function scheduleTravelRestReminders(releaseAt: Date): {
-  ok: boolean
-  hoursSinceRelease?: number
-} {
+export async function scheduleTravelRestReminders(
+  releaseAt: Date,
+  opts?: {
+    /** Return true if user wants reminders. Default: true. */
+    askUser?: () => Promise<boolean>
+  },
+): Promise<{ ok: boolean; hoursSinceRelease?: number }> {
   const now = new Date()
   if (now > releaseAt) {
-    const hoursSinceRelease =
-      (now.getTime() - releaseAt.getTime()) / (1000 * 60 * 60)
-    return { ok: false, hoursSinceRelease }
+    return {
+      ok: false,
+      hoursSinceRelease:
+        (now.getTime() - releaseAt.getTime()) / (1000 * 60 * 60),
+    }
   }
 
-  const wants = confirm(
-    'Would you like a notification 30 minutes after the release time to remember to confirm the new release time with your company?',
-  )
+  const wants = opts?.askUser ? await opts.askUser() : true
   if (!wants) return { ok: true }
 
-  const timeToFirst =
-    releaseAt.getTime() - now.getTime() + 30 * 60 * 1000
-  schedule(timeToFirst, () => {
-    alert(
-      'Reminder: Confirm the new release time with your company (at the hotel room, key in hand or established rest location).',
-    )
-    schedule(30 * 60 * 1000, () => {
-      alert(
-        'Follow-up: Please update the release time on the app to reflect the actual time at the rest location.',
-      )
-    })
+  await ensureWebPermission()
+
+  const releaseIso = releaseAt.toISOString()
+  const firstAt = releaseAt.getTime() + 30 * 60 * 1000
+  const secondAt = firstAt + 30 * 60 * 1000
+
+  enqueue({
+    id: `travel-rest-1-${releaseIso}`,
+    fireAt: firstAt,
+    title: 'WiseDuty · 10+travel',
+    body: 'Confirm the new release time with your company (hotel room, key in hand, or established rest location).',
+    releaseAt: releaseIso,
+  })
+  enqueue({
+    id: `travel-rest-2-${releaseIso}`,
+    fireAt: secondAt,
+    title: 'WiseDuty · 10+travel follow-up',
+    body: 'Update the release time in the app to reflect the actual time at the rest location.',
+    releaseAt: releaseIso,
   })
 
   return { ok: true }

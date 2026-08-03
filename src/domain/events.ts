@@ -5,6 +5,7 @@ import type {
   RestType,
   StoredDutyEvent,
 } from './types'
+import { SCHEDULE_SCHEMA_VERSION } from './types'
 import {
   addCivilDaysInTimeZone,
   startOfDayInTimeZone,
@@ -56,6 +57,7 @@ const VALID_TYPES = new Set([
 
 export function serializeEvents(events: DutyEvent[]): StoredDutyEvent[] {
   return events.map((e) => ({
+    schemaVersion: SCHEDULE_SCHEMA_VERSION,
     id: e.id,
     title: e.title,
     start: e.start.toISOString(),

@@ -259,22 +259,27 @@ export function getWeeklyDutyHours(
 }
 
 /**
- * True if adding [start, end] would push the rolling 168h window ending at `end`
- * over the weekly limit (partial overlaps counted).
+ * True if adding a work event [start, end] would push the rolling 168 h window
+ * ending at `end` over the weekly limit (CAR 700.29 60 h baseline).
+ *
+ * Uses the same weighted work math as {@link getWeeklyDutyHours} / 700.29(3)
+ * (duty/standby 100%, reserve 33%). Pass `workFactor` for reserves (default 1).
  */
 export function wouldExceedWeeklyLimit(
   events: DutyEvent[],
   start: Date,
   end: Date,
   excludeEventId?: string,
+  workFactor: number = 1,
 ): boolean {
   const windowStart = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000)
   const prior = getWeeklyDutyHours(events, end, excludeEventId)
   const overlapStart = Math.max(start.getTime(), windowStart.getTime())
   const overlapEnd = Math.min(end.getTime(), end.getTime())
+  const factor = Number.isFinite(workFactor) ? Math.max(0, workFactor) : 1
   const newHours =
     overlapEnd > overlapStart
-      ? (overlapEnd - overlapStart) / (1000 * 60 * 60)
+      ? ((overlapEnd - overlapStart) / (1000 * 60 * 60)) * factor
       : 0
   return prior + newHours > MAX_WEEKLY_DUTY_HOURS
 }

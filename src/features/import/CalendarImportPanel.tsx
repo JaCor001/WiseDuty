@@ -10,7 +10,7 @@ import {
   type ScheduleImportResult,
 } from '../../domain/schedule-import'
 import type { DutyEvent, ImportReportMode } from '../../domain/types'
-import { recomputeScheduleCompliance } from '../../domain/events'
+import { applyScheduleMutation } from '../../domain/schedule-pipeline'
 import { useSettings } from '../settings/SettingsContext'
 import {
   getCalendarAccess,
@@ -229,14 +229,29 @@ export default function CalendarImportPanel({
         merged = m.events
         note = `Added ${m.added}, skipped ${m.skippedOverlap} overlapping.`
       }
-      const next = recomputeScheduleCompliance(
-        merged,
-        regulator,
-        homeBaseTZ,
-        acclTZ || homeBaseTZ,
+      // Full pipeline: recompute → 10+travel across duties → evaluate70029
+      const result = applyScheduleMutation(
+        [],
+        {
+          type: 'replace_schedule',
+          events: merged,
+          applyTenPlusTravelAll: true,
+        },
+        {
+          regulator,
+          homeBaseTZ,
+          globalAcclTZ: acclTZ || homeBaseTZ,
+        },
       )
-      onImport(next)
-      setStatusMsg(`Import complete. ${note}`)
+      onImport(result.events)
+      const tenPlus = result.notices.filter((n) => n.kind === 'ten_plus_travel')
+        .length
+      setStatusMsg(
+        `Import complete. ${note}` +
+          (tenPlus
+            ? ` Applied ${tenPlus} reduced-rest (10+travel) conversion(s).`
+            : ''),
+      )
       setPreview(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Import failed')

@@ -104,7 +104,9 @@ export interface DutyFormProps {
    * Always creates a new event from the (already shifted) payload; form stays open.
    * Return false when validation blocked the clone (weekly limit, etc.).
    */
-  onClone: (payload: EventFormSubmitPayload) => boolean | void
+  onClone: (
+    payload: EventFormSubmitPayload,
+  ) => boolean | void | Promise<boolean | void>
 }
 
 function draftFromLeg(leg: FlightLeg, fallbackDay: string): DutyFormDraftLeg {
@@ -1256,9 +1258,10 @@ export default function DutyForm({
       cloneTargetDate,
     )
     const shifted = shiftEventFormPayload(payload, dayDelta)
-    const ok = onClone(shifted)
-    if (ok === false) return
-    setCloneMessage(`Cloned to ${cloneTargetDate}`)
+    void Promise.resolve(onClone(shifted)).then((ok) => {
+      if (ok === false) return
+      setCloneMessage(`Cloned to ${cloneTargetDate}`)
+    })
   }
 
   const formTitle =

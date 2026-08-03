@@ -3,10 +3,8 @@
  * Pure: no React. Call once per schedule/view change, not per click.
  */
 import type { DutyEvent, Regulator } from './types'
-import {
-  eventsOnLocalDay,
-  phantomDisruptiveRestExtension,
-} from './events'
+import { phantomDisruptiveRestExtension } from './events'
+import { buildEventsByDayKey, eventsOnDayKey } from './day-index'
 import {
   dayContentMinRem,
   isHostDayFor,
@@ -190,13 +188,16 @@ export function buildScheduleLayout(
   const viewParts = getZonedTimeParts(viewMonth, calendarTZ)
   const byKey = new Map<string, DayLayoutSpec>()
   let sharedMin = 2.75
+  // One index for the month: O(events × span) then O(1) per day (not O(days×events))
+  const eventsByDay = buildEventsByDayKey(events, calendarTZ)
 
   for (const date of days) {
+    const dayKey = toDateInputValueInTZ(date, calendarTZ)
     const layout = buildOneDayLayout({
       date,
       viewYear: viewParts.year,
       viewMonth: viewParts.month,
-      events,
+      dayEvents: eventsOnDayKey(eventsByDay, dayKey),
       displaySdfs,
       calendarTZ,
       regulator,
@@ -216,7 +217,8 @@ function buildOneDayLayout(opts: {
   date: Date
   viewYear: number
   viewMonth: number
-  events: DutyEvent[]
+  /** Pre-filtered events for this civil day (from day-index). */
+  dayEvents: DutyEvent[]
   displaySdfs: DisplaySdf[]
   calendarTZ: string
   regulator: Regulator
@@ -229,7 +231,7 @@ function buildOneDayLayout(opts: {
     date,
     viewYear,
     viewMonth,
-    events,
+    dayEvents,
     displaySdfs,
     calendarTZ,
     regulator,
@@ -245,8 +247,6 @@ function buildOneDayLayout(opts: {
   const dayStartMs = dayStart.getTime()
   const dayEndMs = dayEnd.getTime()
   const dayParts = getZonedTimeParts(date, calendarTZ)
-
-  const dayEvents = eventsOnLocalDay(events, date, calendarTZ)
   const bars: DayBarSpec[] = []
   type RawMarker = {
     type: DutyMarker
@@ -458,7 +458,7 @@ function buildOneDayLayout(opts: {
   // that rest's chip is enriched with the same displaySdf metadata above.
   displaySdfs.forEach((display, index) => {
     const sdf = display.sdf
-    if (isSdfCoveredByStructuralRest(sdf, events)) return
+    if (isSdfCoveredByStructuralRest(sdf, dayEvents)) return
     const sdfId = `sdf-${sdf.start.toISOString()}-${index}`
     if (
       sdf.end.getTime() <= dayStartMs ||
