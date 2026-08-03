@@ -163,7 +163,6 @@ describe('Max FDP uses acclimatized hour not dep local', () => {
     // Report ~05:00 Vancouver local = 08:00 Toronto
     // If wrongly used Vancouver 05:00 → max 11 h; Toronto 08:00 → max 13 h (≥50, 1 sector)
     const dep = zonedWallTime(YVR, 2026, 7, 11, 6, 0) // report 05:00 with 60 min buffer
-    const arr = zonedWallTime(YVR, 2026, 7, 11, 8, 0)
     // Use CYVR→CYYC for airports
     const r = deriveFdpFromFlights({
       flights: [
