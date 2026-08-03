@@ -333,7 +333,9 @@ function buildOneDayLayout(opts: {
           ? 'standby'
           : event.type === 'free'
             ? 'free'
-            : event.type
+            : event.type === 'rest' && event.restKind === 'split_break'
+              ? 'rest rest-split'
+              : event.type
     const spanClass = [
       !isStart ? 'event-bar--open-start' : '',
       !isEnd ? 'event-bar--open-end' : '',
@@ -351,6 +353,44 @@ function buildOneDayLayout(opts: {
       title: event.title,
       kind: 'event',
     })
+
+    // Flight legs inside FDP: darker sub-segments on the same vertical band
+    if (event.type === 'duty' && event.flights && event.flights.length > 0) {
+      const legs = [...event.flights].sort(
+        (a, b) => a.dep.getTime() - b.dep.getTime(),
+      )
+      legs.forEach((leg, legIdx) => {
+        if (
+          leg.arr.getTime() <= dayStartMs ||
+          leg.dep.getTime() >= dayEndMs
+        ) {
+          return
+        }
+        const pos = dayBarPosition(leg.dep, leg.arr, dayStart, dayEnd)
+        if (pos.width < 0.15) return
+        const legStart = leg.dep.getTime() >= dayStartMs
+        const legEnd = leg.arr.getTime() <= dayEndMs
+        const legSpan = [
+          !legStart ? 'event-bar--open-start' : '',
+          !legEnd ? 'event-bar--open-end' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')
+        const route = `${leg.depIcao}→${leg.arrIcao}`
+        bars.push({
+          key: `${event.id}-leg-${leg.id || legIdx}-${dayKey}`,
+          eventId: event.id,
+          className: `event-bar flight-leg${leg.isDeadhead ? ' flight-leg--dh' : ''}${legSpan ? ` ${legSpan}` : ''}`,
+          left: `${pos.left}%`,
+          width: `${pos.width}%`,
+          top: barTop,
+          title: leg.isDeadhead
+            ? `${route} (deadhead / positioning)`
+            : route,
+          kind: 'event',
+        })
+      })
+    }
   })
 
   // Phantoms (precomputed) clipped to this day

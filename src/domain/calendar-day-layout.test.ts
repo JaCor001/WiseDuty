@@ -49,6 +49,65 @@ function matchingDisplaySdf(): DisplaySdf {
   }
 }
 
+describe('calendar-day-layout flight legs', () => {
+  it('draws darker flight segments inside a duty bar', () => {
+    const duty: DutyEvent = {
+      id: 'd1',
+      title: 'Duty',
+      type: 'duty',
+      start: new Date('2026-07-10T12:00:00.000Z'), // 08:00 Toronto
+      end: new Date('2026-07-10T22:00:00.000Z'), // 18:00 Toronto
+      acclTZ: TZ,
+      startTZ: TZ,
+      endTZ: TZ,
+      flights: [
+        {
+          id: 'f1',
+          depIcao: 'CYYZ',
+          arrIcao: 'CYUL',
+          dep: new Date('2026-07-10T13:00:00.000Z'),
+          arr: new Date('2026-07-10T14:30:00.000Z'),
+          isDeadhead: false,
+        },
+        {
+          id: 'f2',
+          depIcao: 'CYUL',
+          arrIcao: 'CYYZ',
+          dep: new Date('2026-07-10T18:00:00.000Z'),
+          arr: new Date('2026-07-10T19:30:00.000Z'),
+          isDeadhead: true,
+        },
+      ],
+    }
+    const days = [startOfDayInTimeZone(new Date('2026-07-10T12:00:00.000Z'), TZ)]
+    const hostMap = buildPreferredHostMap(
+      [{ id: duty.id, start: duty.start, end: duty.end }],
+      TZ,
+    )
+    const { byKey } = buildScheduleLayout(
+      days,
+      days[0],
+      [duty],
+      [],
+      TZ,
+      'TC',
+      TZ,
+      hostMap,
+      [],
+      [],
+    )
+    const day = [...byKey.values()][0]
+    const dutyBars = day.bars.filter((b) => b.className.includes('duty'))
+    const flightBars = day.bars.filter((b) => b.className.includes('flight-leg'))
+    expect(dutyBars.length).toBe(1)
+    expect(flightBars.length).toBe(2)
+    expect(flightBars.some((b) => b.className.includes('flight-leg--dh'))).toBe(
+      true,
+    )
+    expect(flightBars[0].title).toContain('CYYZ→CYUL')
+  })
+})
+
 describe('calendar-day-layout SDF dedupe', () => {
   it('shows one SDF chip when structural rest already covers a displaySdf', () => {
     const rest = restSdf()

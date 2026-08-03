@@ -2,10 +2,18 @@ import { describe, expect, it } from 'vitest'
 import {
   avgSectorBandFromMinutes,
   deriveFdpFromFlights,
+  reportDayRelativeHint,
+  resolveReleaseDateTimeFromTime,
+  resolveReportDateTimeFromTime,
   selectReportBufferMin,
   selectReleaseBufferMin,
 } from './fdp-from-flights'
 import { DEFAULT_DUTY_TIMING_BUFFERS, type FlightLeg } from './types'
+import {
+  formatHHmmInTZ,
+  toDateInputValueInTZ,
+  zonedWallTime,
+} from './time'
 
 function leg(
   partial: Partial<FlightLeg> &
@@ -69,6 +77,67 @@ describe('buffer selection', () => {
         b,
       ).min,
     ).toBe(b.releaseDeadheadMin)
+  })
+})
+
+describe('resolveReportDateTimeFromTime', () => {
+  const TZ = 'America/Toronto'
+
+  it('keeps report on same day when before departure', () => {
+    const dep = zonedWallTime(TZ, 2026, 7, 11, 8, 0)
+    const report = resolveReportDateTimeFromTime('06:30', dep, TZ)!
+    expect(toDateInputValueInTZ(report, TZ)).toBe('2026-07-11')
+    expect(formatHHmmInTZ(report, TZ)).toBe('06:30')
+  })
+
+  it('uses previous day when wall time would be after an after-midnight dep', () => {
+    // Dep 00:30 local; report 23:00 → previous calendar day
+    const dep = zonedWallTime(TZ, 2026, 7, 11, 0, 30)
+    const report = resolveReportDateTimeFromTime('23:00', dep, TZ)!
+    expect(toDateInputValueInTZ(report, TZ)).toBe('2026-07-10')
+    expect(formatHHmmInTZ(report, TZ)).toBe('23:00')
+    expect(report.getTime()).toBeLessThan(dep.getTime())
+  })
+
+  it('keeps early morning report on dep day for after-midnight dep', () => {
+    // Dep 00:30; report 00:00 same morning
+    const dep = zonedWallTime(TZ, 2026, 7, 11, 0, 30)
+    const report = resolveReportDateTimeFromTime('00:00', dep, TZ)!
+    expect(toDateInputValueInTZ(report, TZ)).toBe('2026-07-11')
+    expect(formatHHmmInTZ(report, TZ)).toBe('00:00')
+  })
+
+  it('auto buffer across midnight uses previous day', () => {
+    const dep = zonedWallTime(TZ, 2026, 7, 11, 0, 30)
+    const r = deriveFdpFromFlights({
+      flights: [
+        leg({
+          id: '1',
+          depIcao: 'CYUL',
+          arrIcao: 'CYYZ',
+          dep,
+          arr: zonedWallTime(TZ, 2026, 7, 11, 2, 0),
+        }),
+      ],
+      buffers: { ...DEFAULT_DUTY_TIMING_BUFFERS, reportOperatingMin: 60 },
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    // 60 min before 00:30 → 23:30 previous day
+    expect(toDateInputValueInTZ(r.reportAuto, TZ)).toBe('2026-07-10')
+    expect(formatHHmmInTZ(r.reportAuto, TZ)).toBe('23:30')
+    expect(reportDayRelativeHint(r.reportAuto, dep, TZ)).toMatch(/Day before/)
+  })
+})
+
+describe('resolveReleaseDateTimeFromTime', () => {
+  const TZ = 'America/Toronto'
+
+  it('rolls to next day when release wall time is before late arrival', () => {
+    const arr = zonedWallTime(TZ, 2026, 7, 11, 23, 40)
+    const release = resolveReleaseDateTimeFromTime('00:10', arr, TZ)!
+    expect(toDateInputValueInTZ(release, TZ)).toBe('2026-07-12')
+    expect(formatHHmmInTZ(release, TZ)).toBe('00:10')
   })
 })
 

@@ -17,4 +17,11 @@ describe('airports', () => {
     const r = searchAirports('calgary', 5)
     expect(r.some((a) => a.icao === 'CYYC')).toBe(true)
   })
+
+  it('includes Comox YQQ and Jacksonville JAX/VQQ', () => {
+    expect(getAirportByCode('YQQ')?.icao).toBe('CYQQ')
+    expect(getAirportByCode('JAX')?.icao).toBe('KJAX')
+    expect(getAirportByCode('VQQ')?.icao).toBe('KVQQ')
+    expect(searchAirports('YQQ', 3)[0]?.icao).toBe('CYQQ')
+  })
 })

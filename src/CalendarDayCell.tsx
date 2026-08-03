@@ -1,4 +1,4 @@
-import { memo, type CSSProperties, type MouseEvent } from 'react'
+import { memo, type CSSProperties, type MouseEvent, type PointerEvent } from 'react'
 import type {
   DayBarSpec,
   DayLayoutSpec,
@@ -14,6 +14,9 @@ export interface CalendarDayCellProps {
   onDayPressStart: (dayStartMs: number) => void
   onDayPressEnd: () => void
   onBarClick: (bar: DayBarSpec, e: MouseEvent) => void
+  /** Long-press (0.5s) start on a duty/work bar — stops day long-press. */
+  onBarPressStart: (bar: DayBarSpec) => void
+  onBarPressEnd: () => void
   onMarkerClick: (marker: DayMarkerSpec, e: MouseEvent) => void
   onViolationClick: (dayStartMs: number, e: MouseEvent) => void
 }
@@ -27,6 +30,8 @@ function CalendarDayCellInner({
   onDayPressStart,
   onDayPressEnd,
   onBarClick,
+  onBarPressStart,
+  onBarPressEnd,
   onMarkerClick,
   onViolationClick,
 }: CalendarDayCellProps) {
@@ -40,6 +45,34 @@ function CalendarDayCellInner({
   ]
     .filter(Boolean)
     .join(' ')
+
+  const handleBarPointerDown = (bar: DayBarSpec, e: PointerEvent) => {
+    // Keep day long-press from starting when interacting with an event bar
+    e.stopPropagation()
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      /* ignore — not all targets support capture */
+    }
+    onBarPressStart(bar)
+  }
+
+  const handleBarPointerEnd = (e: PointerEvent) => {
+    e.stopPropagation()
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId)
+      } catch {
+        /* ignore */
+      }
+    }
+    onBarPressEnd()
+  }
+
+  /** Mouse/touch companions: pointer stopPropagation does not block these. */
+  const stopDayPress = (e: { stopPropagation: () => void }) => {
+    e.stopPropagation()
+  }
 
   return (
     <div
@@ -62,6 +95,16 @@ function CalendarDayCellInner({
             top: bar.top,
           }}
           title={bar.title}
+          onPointerDown={(e) => handleBarPointerDown(bar, e)}
+          onPointerUp={handleBarPointerEnd}
+          onPointerCancel={handleBarPointerEnd}
+          onMouseDown={stopDayPress}
+          onMouseUp={stopDayPress}
+          onTouchStart={stopDayPress}
+          onTouchEnd={(e) => {
+            stopDayPress(e)
+            onBarPressEnd()
+          }}
           onClick={(e) => onBarClick(bar, e)}
         />
       ))}

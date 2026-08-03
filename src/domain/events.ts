@@ -1,3 +1,4 @@
+import { restampDutyAcclimatization } from './acclimatization'
 import type {
   DutyEvent,
   Regulator,
@@ -37,6 +38,11 @@ import {
   workActivitySpanHours,
 } from './rest-70029'
 import { evaluatePositioningRestForDuty } from './rest-70043'
+import {
+  buildSplitBreakRestEvent,
+  isSplitBreakRest,
+  splitBreakRestId,
+} from './rest-70050'
 
 const MS_168H = 168 * 60 * 60 * 1000
 
@@ -55,6 +61,8 @@ export function serializeEvents(events: DutyEvent[]): StoredDutyEvent[] {
     start: e.start.toISOString(),
     end: e.end.toISOString(),
     type: e.type,
+    eventKind: e.eventKind,
+    locationIcao: e.locationIcao,
     acclTZ: e.acclTZ,
     startTZ: e.startTZ,
     endTZ: e.endTZ,
@@ -85,6 +93,15 @@ export function serializeEvents(events: DutyEvent[]): StoredDutyEvent[] {
     })),
     reportOverridden: e.reportOverridden,
     releaseOverridden: e.releaseOverridden,
+    splitBreak: e.splitBreak
+      ? {
+          start: e.splitBreak.start.toISOString(),
+          end: e.splitBreak.end.toISOString(),
+          locationIcao: e.splitBreak.locationIcao,
+          unforeseenReplan: e.splitBreak.unforeseenReplan,
+        }
+      : undefined,
+    importSource: e.importSource,
   }))
 }
 
@@ -114,6 +131,8 @@ export function deserializeEvents(stored: StoredDutyEvent[]): DutyEvent[] {
         start: new Date(e.start),
         end: new Date(e.end),
         type: VALID_TYPES.has(e.type) ? e.type : 'duty',
+        eventKind: e.eventKind,
+        locationIcao: e.locationIcao,
         acclTZ: e.acclTZ,
         startTZ: e.startTZ,
         endTZ: e.endTZ,
@@ -139,6 +158,19 @@ export function deserializeEvents(stored: StoredDutyEvent[]): DutyEvent[] {
         flights: flights && flights.length > 0 ? flights : undefined,
         reportOverridden: e.reportOverridden,
         releaseOverridden: e.releaseOverridden,
+        splitBreak: (() => {
+          if (!e.splitBreak?.start || !e.splitBreak?.end) return undefined
+          const start = new Date(e.splitBreak.start)
+          const end = new Date(e.splitBreak.end)
+          if (isNaN(start.getTime()) || isNaN(end.getTime())) return undefined
+          return {
+            start,
+            end,
+            locationIcao: e.splitBreak.locationIcao,
+            unforeseenReplan: e.splitBreak.unforeseenReplan,
+          }
+        })(),
+        importSource: e.importSource,
       }
     })
     .filter((e) => !isNaN(e.start.getTime()) && !isNaN(e.end.getTime()))
@@ -155,6 +187,8 @@ export function restIdForDuty(dutyId: string): string {
   return `${dutyId}-rest`
 }
 
+export { splitBreakRestId, isSplitBreakRest, buildSplitBreakRestEvent }
+
 export function findDutiesOnDate(events: DutyEvent[], date: Date): DutyEvent[] {
   const key = date.toDateString()
   return events.filter(
@@ -168,6 +202,26 @@ export function findDutyOnDate(
   date: Date,
 ): DutyEvent | undefined {
   return findDutiesOnDate(events, date)[0]
+}
+
+/** User-editable work events starting on this calendar day (not rest/free). */
+export function findEditableEventsOnDate(
+  events: DutyEvent[],
+  date: Date,
+): DutyEvent[] {
+  const key = date.toDateString()
+  return events.filter(
+    (e) =>
+      (e.type === 'duty' || e.type === 'reserve' || e.type === 'standby') &&
+      e.start.toDateString() === key,
+  )
+}
+
+export function findEditableEventOnDate(
+  events: DutyEvent[],
+  date: Date,
+): DutyEvent | undefined {
+  return findEditableEventsOnDate(events, date)[0]
 }
 
 export function eventsOnLocalDay(
@@ -194,8 +248,9 @@ export function removeDutyAndRelated(
   duty: DutyEvent,
 ): DutyEvent[] {
   const restId = restIdForDuty(duty.id)
+  const splitId = splitBreakRestId(duty.id)
   const without = events.filter((e) => {
-    if (e.id === duty.id || e.id === restId) return false
+    if (e.id === duty.id || e.id === restId || e.id === splitId) return false
     // Drop auto LNRs; caller should recompute via recomputeLocalNightRests
     if (e.isLocalNightRest && e.restKind === 'lnr_disruptive') return false
     if (e.isLocalNightRest && !e.id.endsWith('-rest')) return false
@@ -754,6 +809,7 @@ export function recomputeLocalNightRests(
 export function isManagedRestEvent(e: DutyEvent): boolean {
   if (e.type !== 'rest') return false
   if (e.id.endsWith('-rest')) return true
+  if (isSplitBreakRest(e)) return true
   if (e.restKind === 'lnr_disruptive') return true
   if (e.isLocalNightRest && e.restRule === 'CAR 700.41') return true
   // Legacy auto LNRs (no restKind, random id)
@@ -784,12 +840,16 @@ export function recomputeScheduleCompliance(
   globalAcclTZ: string,
   restTypeForDuty?: Record<string, RestType>,
 ): DutyEvent[] {
-  const duties = events
+  // CAR 700.28(5): restamp each duty’s acclTZ from home base + time in zone
+  // so Max FDP / E/L/N use acclimatized time across multi-TZ pairings.
+  const restamped = restampDutyAcclimatization(events, homeBaseTZ || globalAcclTZ)
+
+  const duties = restamped
     .filter((e) => e.type === 'duty')
     .sort((a, b) => a.start.getTime() - b.start.getTime())
 
   const prevRestByDuty = new Map<string, DutyEvent>()
-  for (const e of events) {
+  for (const e of restamped) {
     if (e.type === 'rest' && e.id.endsWith('-rest')) {
       const dutyId = e.id.slice(0, -'-rest'.length)
       prevRestByDuty.set(dutyId, e)
@@ -797,7 +857,7 @@ export function recomputeScheduleCompliance(
   }
 
   // Duties get rebuilt rests; preserve reserve/standby/free and non-managed rests.
-  const preserved = events.filter(
+  const preserved = restamped.filter(
     (e) =>
       e.type === 'reserve' ||
       e.type === 'standby' ||
@@ -811,19 +871,26 @@ export function recomputeScheduleCompliance(
   const rests = duties.map((d) => {
     const pref =
       restTypeForDuty?.[d.id] ?? inferBaseRestType(prevRestByDuty.get(d.id))
+    // Per-duty acclTZ (after restamp) is preferred over global settings accl
+    const dutyAccl = d.acclTZ || globalAcclTZ
     return buildRequiredRestForDuty(
       d,
       duties,
       regulator,
       homeBaseTZ,
-      globalAcclTZ,
+      dutyAccl,
       pref,
       scheduleFor70029,
     )
   })
 
+  // Mid-FDP split-duty breaks (CAR 700.50) — rebuilt from duty.splitBreak
+  const splitRests = duties
+    .map((d) => buildSplitBreakRestEvent(d))
+    .filter((r): r is DutyEvent => r != null)
+
   return recomputeLocalNightRests(
-    [...duties, ...rests, ...preserved],
+    [...duties, ...rests, ...splitRests, ...preserved],
     regulator,
     globalAcclTZ,
   )
@@ -841,7 +908,10 @@ export function recomputeAfterDutyChange(
   globalAcclTZ: string,
   restType: RestType,
 ): DutyEvent[] {
-  const withoutOldRest = events.filter((e) => e.id !== restIdForDuty(duty.id))
+  const withoutOldRest = events.filter(
+    (e) =>
+      e.id !== restIdForDuty(duty.id) && e.id !== splitBreakRestId(duty.id),
+  )
   const withDuty = withoutOldRest.some((e) => e.id === duty.id)
     ? withoutOldRest.map((e) => (e.id === duty.id ? duty : e))
     : [...withoutOldRest, duty]
@@ -853,6 +923,203 @@ export function recomputeAfterDutyChange(
     globalAcclTZ,
     { [duty.id]: restType },
   )
+}
+
+/** Notice when next FDP compresses prior rest into legal CAR 700.40 10+travel. */
+export interface TenPlusTravelCompression {
+  previousDutyId: string
+  previousRelease: Date
+  nextDutyId: string
+  gapHours: number
+  requiredRestHours: number
+}
+
+function collectRestTypePrefs(events: DutyEvent[]): Record<string, RestType> {
+  const prefs: Record<string, RestType> = {}
+  for (const e of events) {
+    if (e.type === 'rest' && e.id.endsWith('-rest')) {
+      const dutyId = e.id.slice(0, -'-rest'.length)
+      prefs[dutyId] = inferBaseRestType(e)
+    }
+  }
+  return prefs
+}
+
+/**
+ * If adding/editing `triggeringDutyId` leaves only 10–12 h after the previous
+ * FDP, and 10 h rest (CAR 700.40 10+travel) is legally sufficient while 12 h is
+ * not, convert the previous duty’s base rest to 10+travel and return a notice
+ * for crew acknowledgment + travel-time reminders.
+ */
+export function applyTenPlusTravelIfRestCompressed(
+  events: DutyEvent[],
+  triggeringDutyId: string,
+  regulator: Regulator,
+  homeBaseTZ: string,
+  globalAcclTZ: string,
+): { events: DutyEvent[]; notice: TenPlusTravelCompression | null } {
+  if (regulator !== 'TC') {
+    return { events, notice: null }
+  }
+
+  const duties = events
+    .filter((e) => e.type === 'duty')
+    .sort((a, b) => a.start.getTime() - b.start.getTime())
+  const idx = duties.findIndex((d) => d.id === triggeringDutyId)
+  if (idx <= 0) return { events, notice: null }
+
+  const prev = duties[idx - 1]
+  const next = duties[idx]
+  const gapHours =
+    (next.start.getTime() - prev.end.getTime()) / (1000 * 60 * 60)
+
+  // Only the “reduced between 10 and 12 h” band
+  if (gapHours < 10 - 1e-6 || gapHours >= 12 - 1e-6) {
+    return { events, notice: null }
+  }
+
+  const existingRest = events.find((e) => e.id === restIdForDuty(prev.id))
+  // Already on 10+travel — no conversion / no popup
+  if (inferBaseRestType(existingRest) === '10+travel') {
+    return { events, notice: null }
+  }
+
+  // Only act when the next duty actually collides with the prior required rest
+  // (or that rest is already flagged short). Pure schedule edits with a clean
+  // gap should not force reduced rest.
+  if (
+    existingRest &&
+    !existingRest.violated &&
+    !eventsOverlap(existingRest.start, existingRest.end, next.start, next.end)
+  ) {
+    return { events, notice: null }
+  }
+
+  const nonManaged = events.filter(
+    (e) => e.type !== 'rest' || !isManagedRestEvent(e),
+  )
+  const scheduleFor70029 = [
+    ...duties,
+    ...nonManaged.filter((e) => e.type !== 'duty'),
+  ]
+
+  const restIf12 = buildRequiredRestForDuty(
+    prev,
+    duties,
+    regulator,
+    homeBaseTZ,
+    globalAcclTZ,
+    '12h',
+    scheduleFor70029,
+  )
+  const restIf10 = buildRequiredRestForDuty(
+    prev,
+    duties,
+    regulator,
+    homeBaseTZ,
+    globalAcclTZ,
+    '10+travel',
+    scheduleFor70029,
+  )
+
+  const accl = restIf10.acclTZ || prev.acclTZ || globalAcclTZ
+  const plan12: TimeZoneRestPlan = {
+    restHours: restIf12.requiredRestHours ?? 12,
+    localNights: restIf12.requiredLocalNights ?? 0,
+    restKind: restIf12.restKind ?? 'base',
+    restRule: restIf12.restRule ?? 'CAR 700.40',
+    why: restIf12.ruleWhy ?? '',
+    zoneDiffHours: 0,
+    timeAwayHours: null,
+    endsAtHome: false,
+    endsAway: false,
+    startsAway: false,
+    woclOnReturn: false,
+    consecutiveWoclDuties: 0,
+  }
+  const plan10: TimeZoneRestPlan = {
+    ...plan12,
+    restHours: restIf10.requiredRestHours ?? 10,
+    localNights: restIf10.requiredLocalNights ?? 0,
+    restKind: restIf10.restKind ?? 'base',
+    restRule: restIf10.restRule ?? 'CAR 700.40',
+    why: restIf10.ruleWhy ?? '',
+  }
+
+  const sat12 = restPlanSatisfied(plan12, prev.end, next.start, accl)
+  const sat10 = restPlanSatisfied(plan10, prev.end, next.start, accl)
+
+  // 10+travel must be legal; 12 h must not fit (compression into reduced rest)
+  if (!sat10.ok || sat12.ok) {
+    return { events, notice: null }
+  }
+
+  // Must still be a base-clock path (not LNR-heavy) for “10 h was an option”
+  if ((restIf10.requiredLocalNights ?? 0) > 0) {
+    return { events, notice: null }
+  }
+
+  const req10 = restIf10.requiredRestHours ?? 10
+  const prefs = collectRestTypePrefs(events)
+  prefs[prev.id] = '10+travel'
+  const nextEvents = recomputeScheduleCompliance(
+    events,
+    regulator,
+    homeBaseTZ,
+    globalAcclTZ,
+    prefs,
+  )
+
+  // Clear a stale “duty overlaps rest” flag on the following FDP when reduced
+  // rest fully resolves the collision under CAR 700.40.
+  const cleaned = nextEvents.map((e) =>
+    e.id === next.id && e.violated ? { ...e, violated: false } : e,
+  )
+
+  return {
+    events: cleaned,
+    notice: {
+      previousDutyId: prev.id,
+      previousRelease: prev.end,
+      nextDutyId: next.id,
+      gapHours,
+      requiredRestHours: req10,
+    },
+  }
+}
+
+/**
+ * Dry-run: after placing `duty` on the schedule, would CAR 700.40 10+travel
+ * legally resolve compression of the previous FDP’s required rest?
+ * Used before the “overlaps rest” confirm so we can auto-apply reduced rest.
+ */
+export function previewTenPlusTravelCompression(
+  events: DutyEvent[],
+  duty: DutyEvent,
+  regulator: Regulator,
+  homeBaseTZ: string,
+  globalAcclTZ: string,
+  restType: RestType = '12h',
+): TenPlusTravelCompression | null {
+  if (regulator !== 'TC') return null
+  const withoutSelf = events.filter(
+    (e) => e.id !== duty.id && e.id !== restIdForDuty(duty.id),
+  )
+  const recomputed = recomputeAfterDutyChange(
+    withoutSelf,
+    duty,
+    regulator,
+    homeBaseTZ,
+    globalAcclTZ,
+    restType,
+  )
+  return applyTenPlusTravelIfRestCompressed(
+    recomputed,
+    duty.id,
+    regulator,
+    homeBaseTZ,
+    globalAcclTZ,
+  ).notice
 }
 
 /**
@@ -885,6 +1152,34 @@ export function findPreviousDuty(
         e.end.getTime() <= beforeStart.getTime(),
     )
     .sort((a, b) => b.end.getTime() - a.end.getTime())[0]
+}
+
+/**
+ * Arrival ICAO of the last flight on the chronologically latest prior FDP.
+ * Used to seed the next duty’s first departure (user-overridable).
+ */
+export function lastFdpArrivalIcao(
+  duties: DutyEvent[],
+  opts?: { before?: Date; excludeId?: string },
+): string | undefined {
+  const beforeMs = opts?.before?.getTime()
+  const candidates = duties
+    .filter((e) => e.type === 'duty' && e.id !== opts?.excludeId)
+    .filter((e) =>
+      beforeMs == null ? true : e.end.getTime() <= beforeMs,
+    )
+    .sort((a, b) => b.end.getTime() - a.end.getTime())
+
+  for (const d of candidates) {
+    if (d.flights && d.flights.length > 0) {
+      const legs = [...d.flights].sort(
+        (a, b) => a.arr.getTime() - b.arr.getTime(),
+      )
+      const last = legs[legs.length - 1]
+      if (last?.arrIcao) return last.arrIcao.toUpperCase()
+    }
+  }
+  return undefined
 }
 
 export function findNextDuty(

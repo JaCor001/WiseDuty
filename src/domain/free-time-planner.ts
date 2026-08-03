@@ -217,6 +217,7 @@ export function freeEventFromProposal(
     start: p.start,
     end: p.end,
     type: 'free',
+    eventKind: 'free',
     acclTZ,
     restKind: 'free_block',
     restRule: 'CAR 700.29',

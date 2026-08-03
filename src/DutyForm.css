@@ -1,33 +1,247 @@
 .duty-form {
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
+  gap: 0.45rem;
+}
+
+/* Override verbose slide-menu label spacing inside this form */
+.slide-menu .duty-form label,
+.duty-form label {
+  margin: 0;
+}
+
+.slide-menu .duty-form > label,
+.duty-form > label {
+  margin: 0;
+}
+
+.duty-form > h3 {
+  margin-bottom: 0.15rem;
+}
+
+.duty-form > .form-hint {
+  margin: 0 0 0.15rem;
+  font-size: 0.78rem;
 }
 
 .duty-form-block {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.2rem;
+}
+
+/* Generic two-column pair (start/end, split times) */
+.duty-form-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.45rem 0.55rem;
+  align-items: start;
+}
+
+/*
+ * Report (above flights) / Release (below) — single horizontal row:
+ * Title | inferred date | time | Auto recalculate
+ */
+.duty-form-timing-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.35rem 0.45rem;
+  padding: 0.28rem 0.4rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-color) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-color) 10%, transparent);
+  min-width: 0;
+}
+
+.duty-form-timing-row.is-manual {
+  border-color: color-mix(in srgb, #f59e0b 40%, var(--border-color, #e2e8f0));
+  background: color-mix(in srgb, #f59e0b 8%, transparent);
+}
+
+.duty-form-timing-title {
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-color);
+  min-width: 3.4rem;
+}
+
+.duty-form-timing-date {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--text-color) 78%, #64748b);
+  white-space: nowrap;
+  padding: 0.15rem 0.35rem;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text-color) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-color) 10%, transparent);
+}
+
+.duty-form-timing-date.is-offset {
+  color: color-mix(in srgb, #b45309 90%, var(--text-color));
+  background: color-mix(in srgb, #f59e0b 16%, transparent);
+  border-color: color-mix(in srgb, #f59e0b 35%, transparent);
+}
+
+body.dark .duty-form-timing-date.is-offset {
+  color: color-mix(in srgb, #fbbf24 90%, var(--text-color));
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
+}
+
+.duty-form-timing-time {
+  flex: 1 1 5.5rem;
+  min-width: 0;
+  max-width: 9.5rem;
+}
+
+.duty-form-timing-time .free-time-input {
+  margin-top: 0;
+  width: 100%;
+}
+
+.slide-menu .duty-form .duty-form-timing-time .free-time-input-field,
+.duty-form .duty-form-timing-time .free-time-input-field {
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+
+.slide-menu .duty-form button.duty-form-btn.duty-form-timing-auto,
+.duty-form button.duty-form-btn.duty-form-timing-auto {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0.28rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  line-height: 1.2;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent-color, #0f766e) 12%, var(--card-bg, #fff));
+  border: 1px solid color-mix(in srgb, var(--accent-color, #0f766e) 35%, var(--border-color, #e2e8f0));
+  color: color-mix(in srgb, var(--accent-color, #0f766e) 85%, var(--text-color));
+}
+
+.slide-menu .duty-form button.duty-form-btn.duty-form-timing-auto:hover:not(:disabled),
+.duty-form button.duty-form-btn.duty-form-timing-auto:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-color, #0f766e) 20%, var(--card-bg, #fff));
+  border-color: color-mix(in srgb, var(--accent-color, #0f766e) 55%, var(--border-color));
+}
+
+.slide-menu .duty-form button.duty-form-btn.duty-form-timing-auto:disabled,
+.duty-form button.duty-form-btn.duty-form-timing-auto:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Narrow panels: allow wrap once so fields stay usable */
+@media (max-width: 360px) {
+  .duty-form-timing-row {
+    flex-wrap: wrap;
+  }
+
+  .duty-form-timing-time {
+    flex: 1 1 100%;
+    max-width: none;
+    order: 5;
+  }
+
+  .duty-form-timing-auto {
+    margin-left: auto;
+  }
+}
+
+.duty-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  min-width: 0;
+  margin: 0 !important;
+}
+
+.duty-form-field > label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  min-width: 0;
+  margin: 0 !important;
+}
+
+/* Date + time stack cleanly in narrow columns */
+.duty-form-field input[type='date'],
+.duty-form-field .free-time-input,
+.duty-form-field .timezone-selector {
+  width: 100%;
+  min-width: 0;
+}
+
+.duty-form-field .free-time-input {
+  margin-top: 0;
+}
+
+.duty-form-field .timezone-selector {
+  margin-top: 0;
 }
 
 .duty-form-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: 0.35rem;
   align-items: center;
 }
 
 .duty-form-row input[type='date'] {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
+.duty-form-row .free-time-input {
+  flex: 1 1 5.5rem;
+  min-width: 0;
+  margin-top: 0;
+}
+
+/* Screen-reader-only labels keep compact visual headers */
+.duty-form-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.duty-form-hint-tight {
+  margin: 0.1rem 0 0 !important;
+  font-size: 0.75rem !important;
+  line-height: 1.3;
+}
+
+.duty-form-checkbox-compact {
+  margin: 0.15rem 0 0 !important;
+  font-size: 0.8rem !important;
+  gap: 0.35rem !important;
+  align-items: center !important;
+}
+
+.duty-form-checkbox-compact input[type='checkbox'] {
+  margin-top: 0 !important;
+}
+
+/* —— Flight card: side-by-side dep | arr —— */
 .duty-form-flight {
   border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
   border-radius: 10px;
-  padding: 0.65rem 0.75rem;
+  padding: 0.5rem 0.55rem 0.55rem;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.4rem;
   background: color-mix(in srgb, var(--text-color) 3%, transparent);
 }
 
@@ -35,25 +249,183 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.15rem;
+  gap: 0.35rem;
+  margin-bottom: 0;
+  flex-wrap: wrap;
+}
+
+.duty-form-flight-head-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.55rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.duty-form-flight-head strong {
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+
+.duty-form-flight-toggles {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.55rem;
+}
+
+.duty-form-flight-toggle {
+  margin: 0 !important;
+  font-size: 0.78rem !important;
+  font-weight: 600;
+  white-space: nowrap;
+  gap: 0.3rem !important;
+  align-items: center !important;
+  line-height: 1.2;
+}
+
+.duty-form-flight-toggle input[type='checkbox'] {
+  width: 1rem !important;
+  height: 1rem !important;
+  min-width: 1rem !important;
+  min-height: 1rem !important;
+  margin: 0 !important;
+}
+
+.duty-form-flight-head-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.duty-form-block-time {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--text-color) 72%, #64748b);
+  white-space: nowrap;
+}
+
+.duty-form-flight-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.45rem 0.55rem;
+  align-items: start;
+}
+
+.duty-form-endpoint {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+  padding: 0.35rem 0.4rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card-bg, #fff) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.duty-form-endpoint-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--text-color) 65%, #64748b);
+  line-height: 1.2;
+}
+
+.duty-form-endpoint .time-display {
+  margin-top: 0 !important;
+  font-size: 0.72rem !important;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.duty-form-flight-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
 }
 
 .duty-form-add-flight {
   align-self: flex-start;
   width: auto !important;
-  margin: 0.15rem 0 0.35rem;
+  margin: 0;
 }
 
 .duty-form-derived {
-  font-size: 0.85rem;
-  line-height: 1.4;
-  padding: 0.45rem 0.55rem;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  padding: 0.4rem 0.5rem;
   border-radius: 8px;
   background: color-mix(in srgb, #3b82f6 12%, transparent);
 }
 
 .duty-form-derived p {
-  margin: 0.15rem 0;
+  margin: 0.12rem 0;
+}
+
+.duty-form-derived-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem 0.5rem;
+}
+
+.duty-form-derived-max {
+  margin: 0 !important;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.duty-form-derived-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.95rem;
+}
+
+.duty-form-derived-sub {
+  font-weight: 500;
+  opacity: 0.85;
+  font-size: 0.78rem;
+}
+
+.slide-menu .duty-form button.duty-form-btn.duty-form-derived-toggle,
+.duty-form button.duty-form-btn.duty-form-derived-toggle {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0.22rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  border-radius: 5px;
+  background: color-mix(in srgb, #3b82f6 14%, var(--card-bg, #fff));
+  border: 1px solid color-mix(in srgb, #3b82f6 35%, var(--border-color, #e2e8f0));
+  color: color-mix(in srgb, #1d4ed8 80%, var(--text-color));
+}
+
+.slide-menu .duty-form button.duty-form-btn.duty-form-derived-toggle:hover,
+.duty-form button.duty-form-btn.duty-form-derived-toggle:hover {
+  background: color-mix(in srgb, #3b82f6 22%, var(--card-bg, #fff));
+  border-color: color-mix(in srgb, #3b82f6 50%, var(--border-color));
+}
+
+.duty-form-derived-details {
+  margin-top: 0.4rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid color-mix(in srgb, #3b82f6 22%, transparent);
+}
+
+body.dark .slide-menu .duty-form button.duty-form-btn.duty-form-derived-toggle,
+body.dark .duty-form button.duty-form-btn.duty-form-derived-toggle {
+  color: color-mix(in srgb, #93c5fd 90%, var(--text-color));
+  background: color-mix(in srgb, #3b82f6 18%, var(--card-bg, #1e293b));
+  border-color: color-mix(in srgb, #60a5fa 35%, var(--border-color, #334155));
 }
 
 /*
@@ -105,10 +477,11 @@
 /* Remove flight — destructive red */
 .slide-menu .duty-form button.duty-form-btn-danger,
 .duty-form button.duty-form-btn-danger {
-  padding: 0.25rem 0.55rem;
+  padding: 0.22rem 0.5rem;
   background: color-mix(in srgb, #dc2626 10%, var(--card-bg, #fff));
   border: 1px solid color-mix(in srgb, #dc2626 35%, var(--border-color, #e2e8f0));
   color: #b91c1c;
+  font-size: 0.8rem;
 }
 
 .slide-menu .duty-form button.duty-form-btn-danger:hover,
@@ -136,8 +509,8 @@ body.dark .duty-form button.duty-form-btn-danger:hover {
 .slide-menu .duty-form button.duty-form-btn-secondary,
 .duty-form button.duty-form-btn-secondary {
   width: 100%;
-  margin-top: 0.5rem;
-  padding: 0.7rem 0.75rem;
+  margin-top: 0.35rem;
+  padding: 0.6rem 0.7rem;
   background: color-mix(in srgb, var(--text-color) 6%, var(--card-bg, #fff));
   border: 1px solid color-mix(in srgb, var(--text-color) 16%, var(--border-color, #e2e8f0));
   color: var(--text-color);
@@ -154,16 +527,16 @@ body.dark .duty-form button.duty-form-btn-danger:hover {
 .slide-menu .duty-form button.duty-form-btn-secondary.duty-form-add-flight,
 .duty-form button.duty-form-btn-secondary.duty-form-add-flight {
   width: auto;
-  margin-top: 0.15rem;
-  padding: 0.45rem 0.75rem;
+  margin-top: 0;
+  padding: 0.4rem 0.7rem;
 }
 
 /* Primary submit — keep full-width brand action */
 .slide-menu .duty-form button.duty-form-btn-primary,
 .duty-form button.duty-form-btn-primary {
   width: 100%;
-  margin-top: 0.5rem;
-  padding: 0.7rem 0.75rem;
+  margin-top: 0.35rem;
+  padding: 0.65rem 0.7rem;
   background: var(--primary-color);
   border: 1px solid transparent;
   color: var(--primary-contrast, #fff);
@@ -179,4 +552,304 @@ body.dark .duty-form button.duty-form-btn-danger:hover {
 
 .duty-form-flight-head .duty-form-btn-danger {
   flex-shrink: 0;
+}
+
+/* Stale / previously entered block after event-type switch */
+.duty-form-stale {
+  border: 1px dashed color-mix(in srgb, #f59e0b 45%, var(--border-color, #e2e8f0));
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  background: color-mix(in srgb, #f59e0b 10%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.duty-form-stale-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.duty-form-stale-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.duty-form-stale-label {
+  font-weight: 600;
+}
+
+.duty-form-handoff-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+/* CAR 700.50 split-duty break panel */
+.duty-form-split {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.duty-form-split-section-label {
+  margin: 0.15rem 0 0 !important;
+  font-weight: 700;
+  font-size: 0.75rem !important;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--text-color) 70%, #64748b) !important;
+}
+
+.slide-menu .duty-form button.duty-form-btn-secondary.duty-form-split-toggle,
+.duty-form button.duty-form-btn-secondary.duty-form-split-toggle {
+  width: auto;
+  margin-top: 0;
+  padding: 0.4rem 0.7rem;
+}
+
+.duty-form-split-panel {
+  border: 1px solid color-mix(in srgb, #8b5cf6 35%, var(--border-color, #e2e8f0));
+  border-radius: 10px;
+  padding: 0.5rem 0.55rem;
+  background: color-mix(in srgb, #8b5cf6 8%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.duty-form-split-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.duty-form-split-summary {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.3;
+  font-weight: 600;
+  color: color-mix(in srgb, #6d28d9 80%, var(--text-color));
+}
+
+body.dark .duty-form-split-summary {
+  color: color-mix(in srgb, #c4b5fd 90%, var(--text-color));
+}
+
+/* Clone-to-date block between primary save and Cancel */
+.duty-form-clone {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.05rem;
+}
+
+.duty-form-clone-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.duty-form-clone-row {
+  width: 100%;
+}
+
+.slide-menu .duty-form button.duty-form-btn-secondary.duty-form-clone-confirm,
+.duty-form button.duty-form-btn-secondary.duty-form-clone-confirm {
+  width: auto;
+  margin-top: 0;
+  padding: 0.4rem 0.8rem;
+  flex-shrink: 0;
+}
+
+.slide-menu .duty-form button.duty-form-btn-ghost.duty-form-clone-dismiss,
+.duty-form button.duty-form-btn-ghost.duty-form-clone-dismiss {
+  align-self: flex-start;
+  text-decoration: none;
+  font-size: 0.8rem;
+  padding: 0.15rem 0.2rem;
+}
+
+.duty-form-clone-success {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.3;
+  color: color-mix(in srgb, #16a34a 85%, var(--text-color));
+  font-weight: 600;
+}
+
+body.dark .duty-form-clone-success {
+  color: color-mix(in srgb, #4ade80 90%, var(--text-color));
+}
+
+/* Compact inputs inside the form (still readable) */
+.slide-menu .duty-form input:not([type='checkbox']):not([type='radio']),
+.slide-menu .duty-form select,
+.slide-menu .duty-form .free-time-input-field,
+.slide-menu .duty-form .timezone-selector-input {
+  margin-top: 0;
+  padding: 0.45rem 0.5rem;
+  font-size: 0.95rem !important;
+}
+
+/* Keep clear gap between typed time / placeholder and format badge */
+.slide-menu .duty-form .free-time-input-field {
+  padding-right: 3.1rem !important;
+}
+
+.slide-menu .duty-form .time-display {
+  margin-top: 0.15rem;
+}
+
+/* —— Event type select: obvious dropdown control —— */
+.duty-form-select-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+
+.duty-form-select-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+/* Custom chevron (native arrow is removed by slide-menu appearance:none) */
+.duty-form-select-wrap::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 0.85rem;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-top: -0.2rem;
+  border-right: 2px solid color-mix(in srgb, var(--text-color) 70%, #64748b);
+  border-bottom: 2px solid color-mix(in srgb, var(--text-color) 70%, #64748b);
+  transform: translateY(-50%) rotate(45deg);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.slide-menu .duty-form select.duty-form-select,
+.duty-form select.duty-form-select {
+  width: 100%;
+  margin-top: 0;
+  padding: 0.55rem 2.4rem 0.55rem 0.7rem !important;
+  border: 1.5px solid color-mix(in srgb, var(--accent-color, #0f766e) 45%, var(--border-color, #e2e8f0));
+  border-radius: var(--radius-sm, 6px);
+  background: color-mix(in srgb, var(--accent-color, #0f766e) 7%, var(--card-bg, #fff));
+  color: var(--text-color);
+  font-size: 0.98rem !important;
+  font-weight: 600;
+  line-height: 1.35;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--text-color) 6%, transparent);
+}
+
+.slide-menu .duty-form select.duty-form-select:hover:not(:disabled),
+.duty-form select.duty-form-select:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent-color, #0f766e) 70%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color, #0f766e) 12%, var(--card-bg, #fff));
+}
+
+.slide-menu .duty-form select.duty-form-select:focus,
+.duty-form select.duty-form-select:focus {
+  outline: none;
+  border-color: var(--accent-color, #0f766e);
+  box-shadow: 0 0 0 3px var(--glow-color, rgba(15, 118, 110, 0.25));
+}
+
+.slide-menu .duty-form select.duty-form-select:disabled,
+.duty-form select.duty-form-select:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* Rest-type select also benefits from a visible chevron */
+.slide-menu .duty-form select:not(.duty-form-select),
+.duty-form select:not(.duty-form-select) {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 2.2rem !important;
+  background-image: linear-gradient(
+      45deg,
+      transparent 50%,
+      color-mix(in srgb, var(--text-color) 65%, #64748b) 50%
+    ),
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--text-color) 65%, #64748b) 50%,
+      transparent 50%
+    );
+  background-position:
+    calc(100% - 1.05rem) calc(50% - 0.1rem),
+    calc(100% - 0.7rem) calc(50% - 0.1rem);
+  background-size:
+    0.35rem 0.35rem,
+    0.35rem 0.35rem;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+/* —— Responsive: keep two columns when possible —— */
+
+/* Very narrow phones: stack dep/arr and pairs */
+@media (max-width: 360px) {
+  .duty-form-flight-grid,
+  .duty-form-pair {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Comfortable phones / small panels: keep 2-col but slightly tighter */
+@media (min-width: 361px) and (max-width: 420px) {
+  .duty-form-endpoint {
+    padding: 0.3rem 0.3rem;
+  }
+
+  .duty-form-endpoint-label {
+    font-size: 0.68rem;
+  }
+
+  .slide-menu .duty-form input:not([type='checkbox']):not([type='radio']),
+  .slide-menu .duty-form select,
+  .slide-menu .duty-form .free-time-input-field,
+  .slide-menu .duty-form .timezone-selector-input {
+    padding: 0.4rem 0.4rem;
+    font-size: 0.9rem !important;
+  }
+
+  .slide-menu .duty-form .free-time-input-field {
+    padding-right: 3.1rem !important;
+  }
+
+  .slide-menu .duty-form select.duty-form-select {
+    padding: 0.5rem 2.3rem 0.5rem 0.6rem !important;
+  }
+}
+
+/* Wider panels / tablets: a bit more breathing room */
+@media (min-width: 480px) {
+  .duty-form {
+    gap: 0.5rem;
+  }
+
+  .duty-form-flight-grid {
+    gap: 0.55rem 0.75rem;
+  }
+
+  .duty-form-pair {
+    gap: 0.5rem 0.75rem;
+  }
+
+  .duty-form-endpoint {
+    padding: 0.45rem 0.5rem;
+  }
 }

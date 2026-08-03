@@ -15,6 +15,7 @@ import {
   isNightDuty,
 } from './regulations'
 import { earliestLocalNightsRestEnd } from './rest-70042'
+import { splitBreakOverlapHours } from './rest-70050'
 import { getZonedTimeParts, zonedWallTimeOnDay } from './time'
 
 /** Typical post-duty clock rest used to probe “could another FDP fit?” */
@@ -133,7 +134,13 @@ export function getWorkHoursInWindow(
       const o0 = Math.max(e.start.getTime(), windowStart.getTime())
       const o1 = Math.min(e.end.getTime(), windowEnd.getTime())
       if (o1 <= o0) return total
-      return total + ((o1 - o0) / H) * workFactorOf(e)
+      const factor = workFactorOf(e)
+      let hours = ((o1 - o0) / H) * factor
+      // CAR 700.50 / AC 700-047: split-duty break is not hours of work
+      if (e.type === 'duty' && e.splitBreak) {
+        hours -= splitBreakOverlapHours(e, windowStart, windowEnd) * factor
+      }
+      return total + Math.max(0, hours)
     }, 0)
 }
 

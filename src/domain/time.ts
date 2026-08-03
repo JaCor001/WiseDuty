@@ -465,11 +465,9 @@ export function parseFlexibleTime(input: string): string | null {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
 }
 
-/** Placeholder hint for free time entry. */
+/** Placeholder hint for free time entry (kept short for narrow columns). */
 export function timeInputPlaceholder(timeFormat: '24h' | '12h'): string {
-  return timeFormat === '12h'
-    ? 'e.g. 830pm or 2030'
-    : 'e.g. 2030 or 20:30'
+  return timeFormat === '12h' ? '830pm' : '20:30'
 }
 
 /**

@@ -40,3 +40,4 @@ Active work from the structure/scalability audit lives on
 - Auth is UI-only (stubs); no backend yet.
 - 10+travel reminders use in-page timers (do not survive backgrounding).
 - Regulatory tables are simplified pilot-app models — validate against current regs before operational use.
+- **Calendar import** (Settings → Import schedule) needs the native iOS/Android app + calendar permission; web cannot read EventKit. After adding `@capacitor/calendar`, run `npx cap sync`.

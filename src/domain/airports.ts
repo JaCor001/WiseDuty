@@ -56,6 +56,7 @@ const RAW: Array<[string, string, string, string, string, string]> = [
   ['CYLW', 'YLW', 'Kelowna Intl', 'Kelowna', 'CA', 'America/Vancouver'],
   ['CYXS', 'YXS', 'Prince George', 'Prince George', 'CA', 'America/Vancouver'],
   ['CYCD', 'YCD', 'Nanaimo', 'Nanaimo', 'CA', 'America/Vancouver'],
+  ['CYQQ', 'YQQ', 'Comox Valley (CFB Comox)', 'Comox', 'CA', 'America/Vancouver'],
   ['CYPR', 'YPR', 'Prince Rupert', 'Prince Rupert', 'CA', 'America/Vancouver'],
   ['CYXT', 'YXT', 'Northwest Regional Terrace-Kitimat', 'Terrace', 'CA', 'America/Vancouver'],
   ['CYZP', 'YZP', 'Sandspit', 'Sandspit', 'CA', 'America/Vancouver'],

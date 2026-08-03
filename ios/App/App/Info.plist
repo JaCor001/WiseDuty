@@ -47,5 +47,11 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSCalendarsUsageDescription</key>
+	<string>WiseDuty imports your crew schedule from Calendar to track flight duty limits.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>WiseDuty needs full calendar access to read pairings and report times from your selected work calendar.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>WiseDuty does not write calendar events; this key is required by iOS. Import is read-only.</string>
 </dict>
 </plist>

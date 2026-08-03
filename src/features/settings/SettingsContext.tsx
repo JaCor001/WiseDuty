@@ -11,9 +11,11 @@ import type {
   AvgSectorTime,
   CalendarTimeReference,
   DutyTimingBuffers,
+  ImportReportMode,
   Regulator,
   TimeFormat,
   TimeFreeOption,
+  WeekStartDay,
 } from '../../domain/types'
 import { DEFAULT_DUTY_TIMING_BUFFERS, STORAGE_KEYS } from '../../domain/types'
 import { deviceTimeZone } from '../../domain/time'
@@ -51,6 +53,8 @@ interface SettingsContextValue {
   toggleDarkMode: () => void
   timeFormat: TimeFormat
   setTimeFormat: (value: TimeFormat) => void
+  weekStartDay: WeekStartDay
+  setWeekStartDay: (value: WeekStartDay) => void
   regulator: Regulator
   setRegulator: (value: Regulator) => void
   referenceTZ: string
@@ -71,6 +75,14 @@ interface SettingsContextValue {
   resolvedCalendarTZ: string
   dutyTimingBuffers: DutyTimingBuffers
   setDutyTimingBuffers: (value: DutyTimingBuffers) => void
+  importCalendarId: string
+  setImportCalendarId: (value: string) => void
+  importCalendarName: string
+  setImportCalendarName: (value: string) => void
+  importReportMode: ImportReportMode
+  setImportReportMode: (value: ImportReportMode) => void
+  importDefaultRangeDays: number
+  setImportDefaultRangeDays: (value: number) => void
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null)
@@ -110,6 +122,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [timeFormat, setTimeFormatState] = useState<TimeFormat>(
     () => (readString(STORAGE_KEYS.timeFormat, '24h') as TimeFormat) || '24h',
   )
+  const [weekStartDay, setWeekStartDayState] = useState<WeekStartDay>(() => {
+    const v = readString(STORAGE_KEYS.weekStartDay, 'sunday')
+    return v === 'monday' ? 'monday' : 'sunday'
+  })
   const [regulator, setRegulatorState] = useState<Regulator>(
     () =>
       (readString(STORAGE_KEYS.regulator, 'TC') as Regulator) || 'TC',
@@ -151,6 +167,25 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         ),
       ),
     )
+  const [importCalendarId, setImportCalendarIdState] = useState(() =>
+    readString(STORAGE_KEYS.importCalendarId, ''),
+  )
+  const [importCalendarName, setImportCalendarNameState] = useState(() =>
+    readString(STORAGE_KEYS.importCalendarName, ''),
+  )
+  const [importReportMode, setImportReportModeState] =
+    useState<ImportReportMode>(() => {
+      const v = readString(STORAGE_KEYS.importReportMode, 'auto')
+      return v === 'buffers' || v === 'event_start' || v === 'auto'
+        ? v
+        : 'auto'
+    })
+  const [importDefaultRangeDays, setImportDefaultRangeDaysState] = useState(
+    () => {
+      const n = Number(readString(STORAGE_KEYS.importDefaultRangeDays, '30'))
+      return Number.isFinite(n) && n >= 1 && n <= 366 ? n : 30
+    },
+  )
 
   useEffect(() => {
     document.body.className = darkMode ? 'dark' : 'light'
@@ -172,6 +207,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const setTimeFormat = useCallback((value: TimeFormat) => {
     setTimeFormatState(value)
     writeString(STORAGE_KEYS.timeFormat, value)
+  }, [])
+
+  const setWeekStartDay = useCallback((value: WeekStartDay) => {
+    setWeekStartDayState(value)
+    writeString(STORAGE_KEYS.weekStartDay, value)
   }, [])
 
   const setRegulator = useCallback((value: Regulator) => {
@@ -219,6 +259,26 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     writeString(STORAGE_KEYS.dutyTimingBuffers, JSON.stringify(value))
   }, [])
 
+  const setImportCalendarId = useCallback((value: string) => {
+    setImportCalendarIdState(value)
+    writeString(STORAGE_KEYS.importCalendarId, value)
+  }, [])
+
+  const setImportCalendarName = useCallback((value: string) => {
+    setImportCalendarNameState(value)
+    writeString(STORAGE_KEYS.importCalendarName, value)
+  }, [])
+
+  const setImportReportMode = useCallback((value: ImportReportMode) => {
+    setImportReportModeState(value)
+    writeString(STORAGE_KEYS.importReportMode, value)
+  }, [])
+
+  const setImportDefaultRangeDays = useCallback((value: number) => {
+    setImportDefaultRangeDaysState(value)
+    writeString(STORAGE_KEYS.importDefaultRangeDays, String(value))
+  }, [])
+
   const resolvedCalendarTZ = useMemo(
     () =>
       resolveCalendarTimeZone(
@@ -236,6 +296,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       toggleDarkMode,
       timeFormat,
       setTimeFormat,
+      weekStartDay,
+      setWeekStartDay,
       regulator,
       setRegulator,
       referenceTZ,
@@ -255,6 +317,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       resolvedCalendarTZ,
       dutyTimingBuffers,
       setDutyTimingBuffers,
+      importCalendarId,
+      setImportCalendarId,
+      importCalendarName,
+      setImportCalendarName,
+      importReportMode,
+      setImportReportMode,
+      importDefaultRangeDays,
+      setImportDefaultRangeDays,
     }),
     [
       darkMode,
@@ -262,6 +332,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       toggleDarkMode,
       timeFormat,
       setTimeFormat,
+      weekStartDay,
+      setWeekStartDay,
       regulator,
       setRegulator,
       referenceTZ,
@@ -281,6 +353,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       resolvedCalendarTZ,
       dutyTimingBuffers,
       setDutyTimingBuffers,
+      importCalendarId,
+      setImportCalendarId,
+      importCalendarName,
+      setImportCalendarName,
+      importReportMode,
+      setImportReportMode,
+      importDefaultRangeDays,
+      setImportDefaultRangeDays,
     ],
   )
 

@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@capacitor/android": "^8.0.0",
+    "@capacitor/calendar": "^1.0.0",
     "@capacitor/cli": "^8.0.0",
     "@capacitor/core": "^8.0.0",
     "@capacitor/ios": "^8.0.0",

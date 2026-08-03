@@ -95,6 +95,12 @@ const DEFINITIONS: Record<
       'Minimum rest period after a flight duty period. Under CAR 700.40 this is typically 10–12 hours depending on location and accommodation; CAR 700.42 may increase the minimum when time zones differ.',
     reference: 'CAR 700.40; CAR 700.42(1)/(2); AC 700-047 §§4.37–4.44',
   },
+  R10: {
+    label: 'Reduced rest (10 + travel)',
+    definition:
+      'CAR 700.40 alternative: at least 10 hours rest in suitable accommodation, with travel time to/from accommodation in addition. Used when the following duty starts before a full 12-hour rest would end and the reduced option remains legal.',
+    reference: 'CAR 700.40; AC 700-047 §§4.37–4.40',
+  },
   SDF: {
     label: 'Single day free from duty',
     definition:
@@ -163,15 +169,20 @@ export function explainMarker(
     whyApplies =
       event.ruleWhy ||
       `${nights} local night’s rest required under ${rule}. Evaluated in ${zoneLabel(accl)}. ${status}`
-  } else if (marker === 'RR' && event.type === 'rest') {
+  } else if (
+    (marker === 'RR' || marker === 'R10') &&
+    event.type === 'rest'
+  ) {
     const hours = event.requiredRestHours
     const rule = event.restRule ?? 'CAR 700.40'
     const status = event.violated
       ? 'The following duty starts before this minimum rest ends (or rest is insufficient).'
-      : 'Planned rest meets the minimum clock duration.'
+      : marker === 'R10'
+        ? 'Rest uses the CAR 700.40 10 h + travel option; confirm hotel/room key timing with the operator.'
+        : 'Planned rest meets the minimum clock duration.'
     whyApplies =
       event.ruleWhy ||
-      `Minimum rest of ${hours != null ? formatHours(hours) + ' h' : 'the required duration'} under ${rule}. ${status}`
+      `Minimum rest of ${hours != null ? formatHours(hours) + ' h' : 'the required duration'} under ${rule}${marker === 'R10' ? ' (10+travel)' : ''}. ${status}`
   } else if (event.type === 'duty') {
     whyApplies = `Marker ${marker} on duty in ${zoneLabel(accl)} (${regLabel}).`
   } else {
@@ -312,6 +323,12 @@ function restRuleDefinition(rule?: RestRuleCode): {
         title: 'Rest after positioning (deadhead)',
         rule: 'If a flight crew member must travel for positioning immediately after a flight duty period and the FDP plus that positioning exceeds the maximum flight duty period under CAR 700.28, the rest before the next FDP must equal the hours of work when the exceedance is three hours or less, or the hours of work plus the exceedance when it is more than three hours. Rest is never shorter than CAR 700.40. Exceeding the maximum by more than three hours requires crew agreement and must not exceed seven hours (CAR 700.43(3)).',
         reference: 'CAR 700.43; AC 700-047 §§4.45–4.47',
+      }
+    case 'CAR 700.50':
+      return {
+        title: 'Split-duty break (mid-FDP)',
+        rule: 'A mid-FDP break of at least 60 consecutive minutes in suitable accommodation may extend the CAR 700.28 maximum FDP. The break remains inside the FDP (it is not a rest period under 700.40), counts toward FDP length, and does not count as hours of work. Extension = (break − 45 min) × 100% if the break is during 00:00–05:59 acclimatized time, or × 50% during 06:00–23:59 (or for unforeseen replan). Travel to/from accommodation is not part of the break. Subsequent rest follows normal 700.40 rules after final release.',
+        reference: 'CAR 700.50; AC 700-047 §§4.49–4.53',
       }
     case 'CAR 700.40':
     default:
@@ -511,17 +528,31 @@ export function explainEvent(
         meta.push(`Positioning sectors · ${event.positioningSectors}`)
       }
     }
+    if (event.splitBreak) {
+      const brH =
+        (event.splitBreak.end.getTime() - event.splitBreak.start.getTime()) /
+        (1000 * 60 * 60)
+      meta.push(
+        `Split-duty break · ${formatHours(brH)} h (${formatWhen(event.splitBreak.start)} → ${formatWhen(event.splitBreak.end)})`,
+      )
+      why +=
+        ' Includes a CAR 700.50 split-duty break in suitable accommodation (mid-FDP; not post-duty rest). The break counts toward FDP length but not hours of work.'
+    }
     if (event.violated) {
       why += ' A compliance flag is set (for example overlap with rest).'
     }
 
     return {
-      badge: event.endsWithPositioning ? 'Duty+DH' : 'Duty',
+      badge: event.endsWithPositioning
+        ? 'Duty+DH'
+        : event.splitBreak
+          ? 'Duty+Split'
+          : 'Duty',
       title: event.title || 'Flight duty period',
-      rule: 'A flight duty period (FDP) is the time from the earlier of report for duty, report for flight, positioning, or standby, until engines off / rotors stopped at the end of the last operating flight. Positioning after that is duty/hours of work and may extend total duty under CAR 700.43. Maximum operating FDP depends on acclimatized start time, operating sectors (positioning not counted), average sector time, and any augmentation or split-duty provisions.',
+      rule: 'A flight duty period (FDP) is the time from the earlier of report for duty, report for flight, positioning, or standby, until engines off / rotors stopped at the end of the last operating flight. Positioning after that is duty/hours of work and may extend total duty under CAR 700.43. Maximum operating FDP depends on acclimatized start time, operating sectors (positioning not counted), average sector time, and any augmentation or split-duty provisions (CAR 700.50 mid-FDP break in suitable accommodation).',
       reference:
         regulator === 'TC'
-          ? 'CAR 700.28 (maximum FDP, incl. (6) positioning not a flight); CAR 700.43 (rest after positioning); CAR 101 / AC 700-047 §2.3'
+          ? 'CAR 700.28 (maximum FDP, incl. (6) positioning not a flight); CAR 700.50 (split flight duty); CAR 700.43 (rest after positioning); CAR 101 / AC 700-047 §2.3'
           : `${regLabel} flight duty period limitations`,
       whyApplies: why,
       meta,
@@ -544,20 +575,27 @@ export function explainEvent(
   if (event.restRule === 'CAR 700.43') {
     meta.push('Rest extended due to trailing positioning / deadhead')
   }
+  if (event.restKind === 'split_break' || event.restRule === 'CAR 700.50') {
+    meta.push('Mid-FDP break · still inside flight duty period')
+    meta.push('Not hours of work (CAR 700.29)')
+  }
 
-  const status = event.violated
-    ? 'This rest requirement is currently not met (insufficient gap and/or night window before the next duty).'
-    : 'Based on the current schedule, this rest requirement is met.'
+  const isSplit = event.restKind === 'split_break' || event.restRule === 'CAR 700.50'
+  const status = isSplit
+    ? 'This break is part of the surrounding flight duty period and does not replace post-FDP rest under CAR 700.40.'
+    : event.violated
+      ? 'This rest requirement is currently not met (insufficient gap and/or night window before the next duty).'
+      : 'Based on the current schedule, this rest requirement is met.'
 
   return {
-    badge: event.isLocalNightRest ? 'LNR' : 'Rest',
+    badge: isSplit ? 'Split' : event.isLocalNightRest ? 'LNR' : 'Rest',
     title: def.title,
     rule: def.rule,
     reference: def.reference,
     whyApplies: [event.ruleWhy, status].filter(Boolean).join(' '),
     meta,
     violated: event.violated,
-    canDelete: true,
+    canDelete: !isSplit,
     eventId: event.id,
   }
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  lastFdpArrivalIcao,
   maybeBuildLnrBetween,
   phantomDisruptiveRestExtension,
   recomputeAfterDutyChange,
@@ -36,6 +37,63 @@ function earlyHome(id: string, day: number): DutyEvent {
     endTZ: HOME,
   }
 }
+
+describe('lastFdpArrivalIcao', () => {
+  it('returns last flight arrival of the latest prior FDP', () => {
+    const d1: DutyEvent = {
+      id: 'd1',
+      title: 'Duty',
+      type: 'duty',
+      start: at(2026, 7, 10, 8),
+      end: at(2026, 7, 10, 16),
+      acclTZ: TZ,
+      flights: [
+        {
+          id: 'f1',
+          depIcao: 'CYUL',
+          arrIcao: 'CYYZ',
+          dep: at(2026, 7, 10, 9),
+          arr: at(2026, 7, 10, 10),
+          isDeadhead: false,
+        },
+        {
+          id: 'f2',
+          depIcao: 'CYYZ',
+          arrIcao: 'CYVR',
+          dep: at(2026, 7, 10, 12),
+          arr: at(2026, 7, 10, 15),
+          isDeadhead: false,
+        },
+      ],
+    }
+    const d2: DutyEvent = {
+      id: 'd2',
+      title: 'Duty',
+      type: 'duty',
+      start: at(2026, 7, 11, 8),
+      end: at(2026, 7, 11, 14),
+      acclTZ: TZ,
+      flights: [
+        {
+          id: 'f3',
+          depIcao: 'CYVR',
+          arrIcao: 'CYYC',
+          dep: at(2026, 7, 11, 9),
+          arr: at(2026, 7, 11, 11),
+          isDeadhead: false,
+        },
+      ],
+    }
+    expect(lastFdpArrivalIcao([d1, d2])).toBe('CYYC')
+    expect(lastFdpArrivalIcao([d1, d2], { excludeId: 'd2' })).toBe('CYVR')
+  })
+
+  it('returns undefined when no flight legs exist', () => {
+    expect(lastFdpArrivalIcao([duty('x', at(2026, 7, 1, 8), at(2026, 7, 1, 16))])).toBe(
+      undefined,
+    )
+  })
+})
 
 describe('maybeBuildLnrBetween / recomputeLocalNightRests', () => {
   it('builds LNR for Late → Early (not only Night → Early)', () => {

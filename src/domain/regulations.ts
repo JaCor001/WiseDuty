@@ -1,4 +1,5 @@
 import type { AvgSectorTime, DutyEvent, Regulator } from './types'
+import { splitBreakOverlapHours } from './rest-70050'
 import {
   defaultWorkFactor,
   isWorkEvent,
@@ -238,6 +239,7 @@ export function getWeeklyDutyHours(
 ): number {
   const windowStart = new Date(windowEnd.getTime() - 7 * 24 * 60 * 60 * 1000)
   // Weighted hours of work (duty/standby 100%, reserve 33%) — CAR 700.29(3)
+  // Split-duty breaks (700.50) are excluded from hours of work (AC 700-047).
   return events
     .filter((e) => isWorkEvent(e) && e.id !== excludeEventId)
     .reduce((total, e) => {
@@ -246,10 +248,13 @@ export function getWeeklyDutyHours(
       const overlapStart = Math.max(e.start.getTime(), windowStart.getTime())
       const overlapEnd = Math.min(e.end.getTime(), windowEnd.getTime())
       if (overlapEnd <= overlapStart) return total
-      return (
-        total +
+      let hours =
         ((overlapEnd - overlapStart) / (1000 * 60 * 60)) * factor
-      )
+      if (e.type === 'duty' && e.splitBreak) {
+        hours -=
+          splitBreakOverlapHours(e, windowStart, windowEnd) * factor
+      }
+      return total + Math.max(0, hours)
     }, 0)
 }
 
@@ -298,6 +303,8 @@ export type DutyMarker =
   | 'LNR2'
   | 'LNR3'
   | 'RR'
+  /** CAR 700.40 reduced rest (10 h + travel / hotel) — distinct from standard RR. */
+  | 'R10'
   | 'SDF'
 
 function acclTZFor(event: DutyEvent, globalAcclTZ: string): string {
@@ -509,7 +516,16 @@ export function getDutyMarkers(
     if (nights >= 3) return ['LNR3']
     if (nights === 2) return ['LNR2']
     if (event.isLocalNightRest || nights === 1) return ['LNR']
-    // Required clock rest (700.40 / 700.42 hours)
+    // CAR 700.40 10+travel reduced rest — distinct chip from standard 12 h RR
+    if (
+      event.baseRestType === '10+travel' ||
+      (event.requiredRestHours != null &&
+        event.requiredRestHours <= 10.05 &&
+        event.restKind === 'base')
+    ) {
+      return ['R10']
+    }
+    // Required clock rest (700.40 12 h / 700.42 hours)
     return ['RR']
   }
   if (event.type !== 'duty') return []
@@ -548,7 +564,7 @@ export type MarkerBarAnchor = 'start' | 'end' | 'center'
 export function markerBarAnchor(type: DutyMarker): MarkerBarAnchor {
   if (type === 'E') return 'start'
   if (type === 'L' || type === 'N') return 'end'
-  return 'center' // LNR / LNR2 / LNR3 / RR / SDF
+  return 'center' // LNR / LNR2 / LNR3 / RR / R10 / SDF
 }
 
 /** Short chip label for calendar. */
@@ -557,6 +573,7 @@ export function markerChipLabel(type: DutyMarker, violated?: boolean): string {
   if (type === 'LNR2') return violated ? '2×LNR!' : '2×LNR'
   if (type === 'LNR3') return violated ? '3×LNR!' : '3×LNR'
   if (type === 'RR') return violated ? 'RR!' : 'RR'
+  if (type === 'R10') return violated ? '10R!' : '10R'
   if (type === 'SDF') return violated ? 'SDF!' : 'SDF'
   return type
 }
