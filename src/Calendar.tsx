@@ -13,7 +13,6 @@ import type { DutyEvent, RestType } from './domain/types'
 import {
   defaultWorkFactorForKind,
   eventKindToDutyType,
-  inferEventKind,
   isNonFlightDutyKind,
   MAX_WEEKLY_DUTY_HOURS,
   titleForEventKind,
@@ -652,7 +651,6 @@ function Calendar() {
     if (pressTimerRef.current) clearTimeout(pressTimerRef.current)
     pressTimerRef.current = setTimeout(() => {
       armLongPressGuard()
-      setActionEvent(null)
       selectDate(date)
       setShowMenu(true)
       pressTimerRef.current = null

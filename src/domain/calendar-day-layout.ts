@@ -745,7 +745,6 @@ function buildOneDayLayout(opts: {
       marker.type === 'NEAR' ||
       (marker.violated && restMarker)
     const violatedClass = marker.violated && restMarker
-    const chipH = 'var(--marker-chip-height, 1.2em)'
     const barTopCss = marker.barTop
     const anchor = markerBarAnchor(marker.type)
     // Below-bar chips: preferred top is under the bar; stack offset is the

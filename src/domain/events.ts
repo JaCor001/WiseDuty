@@ -634,6 +634,13 @@ export function buildRequiredRestAfterAvailability(
     restKind: 'base',
     restRule: 'CAR 700.40',
     why: baseWhy,
+    zoneDiffHours: 0,
+    timeAwayHours: null,
+    endsAtHome: false,
+    endsAway: false,
+    startsAway: false,
+    woclOnReturn: false,
+    consecutiveWoclDuties: 0,
   }
 
   // Schedule without managed rests for 700.29 scan

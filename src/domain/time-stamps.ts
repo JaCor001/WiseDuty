@@ -722,20 +722,6 @@ function boxesOverlap(
   )
 }
 
-/** Horizontal edge gap (positive = clear air between boxes). */
-function horizontalEdgeGap(a: Rect, b: Rect): number {
-  if (a.left + a.w <= b.left) return b.left - (a.left + a.w)
-  if (b.left + b.w <= a.left) return a.left - (b.left + b.w)
-  return -Math.min(a.left + a.w - b.left, b.left + b.w - a.left)
-}
-
-/** Vertical edge gap (positive = clear air). */
-function verticalEdgeGap(a: Rect, b: Rect): number {
-  if (a.top + a.h <= b.top) return b.top - (a.top + a.h)
-  if (b.top + b.h <= a.top) return a.top - (b.top + b.h)
-  return -Math.min(a.top + a.h - b.top, b.top + b.h - a.top)
-}
-
 export function labelTopForTier(barTopPct: number, tier: number): number {
   const labelBottom =
     barTopPct -
