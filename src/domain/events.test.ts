@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  availabilitySpawnedCallOut,
+  buildRequiredRestAfterAvailability,
   lastFdpArrivalIcao,
   maybeBuildLnrBetween,
   phantomDisruptiveRestExtension,
@@ -600,5 +602,201 @@ describe('recomputeScheduleCompliance (700.29 SDF → 2×LNR rest)', () => {
     const rest24 = state.find((e) => e.id === restIdForDuty('e24'))!
     expect(rest24.requiredLocalNights).toBe(2)
     expect(rest24.restRule).toBe('CAR 700.29')
+  })
+})
+
+describe('rest after unused reserve / standby', () => {
+  it('deleting a reserve also drops its managed rest bar', () => {
+    const rsv: DutyEvent = {
+      id: 'rsv-del',
+      title: 'Home Reserve',
+      type: 'reserve',
+      start: zonedWallTime(HOME, 2026, 8, 20, 6, 0),
+      end: zonedWallTime(HOME, 2026, 8, 20, 18, 0),
+      acclTZ: HOME,
+      workFactor: 0.33,
+    }
+    const state = recomputeScheduleCompliance([rsv], 'TC', HOME, HOME)
+    expect(state.some((e) => e.id === restIdForDuty('rsv-del'))).toBe(true)
+    const stripped = removeDutyAndRelated(state, rsv)
+    expect(stripped.some((e) => e.id === 'rsv-del')).toBe(false)
+    expect(stripped.some((e) => e.id === restIdForDuty('rsv-del'))).toBe(false)
+    const after = recomputeAfterDutyDelete(stripped, 'TC', HOME, HOME)
+    expect(after.some((e) => e.id === restIdForDuty('rsv-del'))).toBe(false)
+  })
+
+  it('builds 12 h rest after home reserve with no call-out', () => {
+    const rsv: DutyEvent = {
+      id: 'rsv1',
+      title: 'Home Reserve',
+      type: 'reserve',
+      start: zonedWallTime(HOME, 2026, 8, 10, 6, 0),
+      end: zonedWallTime(HOME, 2026, 8, 10, 18, 0),
+      acclTZ: HOME,
+      workFactor: 0.33,
+    }
+    const rest = buildRequiredRestAfterAvailability(rsv, [rsv], 'TC', HOME)
+    expect(rest).not.toBeNull()
+    expect(rest!.id).toBe(restIdForDuty('rsv1'))
+    expect(rest!.start.getTime()).toBe(rsv.end.getTime())
+    expect(rest!.requiredRestHours).toBe(12)
+    expect(rest!.restRule).toBe('CAR 700.40')
+    const state = recomputeScheduleCompliance([rsv], 'TC', HOME, HOME)
+    expect(state.some((e) => e.id === restIdForDuty('rsv1'))).toBe(true)
+  })
+
+  it('builds rest after standby with no assignment', () => {
+    const stby: DutyEvent = {
+      id: 'stby1',
+      title: 'Airport Standby',
+      type: 'standby',
+      start: zonedWallTime(HOME, 2026, 8, 11, 8, 0),
+      end: zonedWallTime(HOME, 2026, 8, 11, 16, 0),
+      acclTZ: HOME,
+      workFactor: 1,
+    }
+    const rest = buildRequiredRestAfterAvailability(stby, [stby], 'TC', HOME)
+    expect(rest).not.toBeNull()
+    expect(rest!.title).toMatch(/standby/i)
+    expect(rest!.requiredRestHours).toBe(12)
+  })
+
+  it('attaches free-day (SDF) rest after 5 consecutive unused RAPs', () => {
+    // Mon–Fri identical home RAP 06:00–18:00: ~19.8 h weighted work over ≥4 days
+    // → 700.29 free-day structure due; next hypothetical RAP Mon would close the window
+    const raps: DutyEvent[] = [10, 11, 12, 13, 14].map((d) => ({
+      id: `rsv${d}`,
+      title: 'Home Reserve',
+      type: 'reserve' as const,
+      start: zonedWallTime(HOME, 2026, 8, d, 6, 0),
+      end: zonedWallTime(HOME, 2026, 8, d, 18, 0),
+      acclTZ: HOME,
+      workFactor: 0.33,
+    }))
+    const state = recomputeScheduleCompliance(raps, 'TC', HOME, HOME)
+    const restFri = state.find((e) => e.id === restIdForDuty('rsv14'))
+    expect(restFri).toBeTruthy()
+    expect(restFri!.restRule).toBe('CAR 700.29')
+    expect(restFri!.requiredLocalNights).toBeGreaterThanOrEqual(2)
+    // Rest spans free-day completion (not just 12 h clock)
+    const twelveH = restFri!.start.getTime() + 12 * 3_600_000
+    expect(restFri!.end.getTime()).toBeGreaterThan(twelveH)
+  })
+
+  it('attaches free-day rest after 5 consecutive RAPs even for late windows (08–20)', () => {
+    // Late-start RAPs previously deferred free day because a hyp next-day RAP
+    // still barely left room before first+168h — 5 consecutive days must force it.
+    const raps: DutyEvent[] = [10, 11, 12, 13, 14].map((d) => ({
+      id: `rsv${d}`,
+      title: 'Home Reserve',
+      type: 'reserve' as const,
+      start: zonedWallTime(HOME, 2026, 8, d, 8, 0),
+      end: zonedWallTime(HOME, 2026, 8, d, 20, 0),
+      acclTZ: HOME,
+      workFactor: 0.33,
+    }))
+    const state = recomputeScheduleCompliance(raps, 'TC', HOME, HOME)
+    const restFri = state.find((e) => e.id === restIdForDuty('rsv14'))
+    expect(restFri).toBeTruthy()
+    expect(restFri!.restRule).toBe('CAR 700.29')
+    expect(restFri!.requiredLocalNights).toBeGreaterThanOrEqual(2)
+    expect(restFri!.title).toMatch(/free day|SDF/i)
+  })
+
+  it('attaches free-day rest after 5 shorter RAPs (08–16) via consecutive-day gate', () => {
+    // 5 × 8 h × 0.33 ≈ 13.2 h weighted — under the old 18 h floor
+    const raps: DutyEvent[] = [10, 11, 12, 13, 14].map((d) => ({
+      id: `rsv${d}`,
+      title: 'Home Reserve',
+      type: 'reserve' as const,
+      start: zonedWallTime(HOME, 2026, 8, d, 8, 0),
+      end: zonedWallTime(HOME, 2026, 8, d, 16, 0),
+      acclTZ: HOME,
+      workFactor: 0.33,
+    }))
+    const state = recomputeScheduleCompliance(raps, 'TC', HOME, HOME)
+    const restFri = state.find((e) => e.id === restIdForDuty('rsv14'))
+    expect(restFri).toBeTruthy()
+    expect(restFri!.restRule).toBe('CAR 700.29')
+    expect(restFri!.requiredLocalNights).toBeGreaterThanOrEqual(2)
+  })
+
+  it('does not force free-day rest after only 4 consecutive RAPs', () => {
+    const raps: DutyEvent[] = [10, 11, 12, 13].map((d) => ({
+      id: `rsv${d}`,
+      title: 'Home Reserve',
+      type: 'reserve' as const,
+      start: zonedWallTime(HOME, 2026, 8, d, 8, 0),
+      end: zonedWallTime(HOME, 2026, 8, d, 20, 0),
+      acclTZ: HOME,
+      workFactor: 0.33,
+    }))
+    const state = recomputeScheduleCompliance(raps, 'TC', HOME, HOME)
+    const rest = state.find((e) => e.id === restIdForDuty('rsv13'))
+    expect(rest).toBeTruthy()
+    expect(rest!.restRule).toBe('CAR 700.40')
+    expect(rest!.requiredLocalNights ?? 0).toBeLessThan(2)
+  })
+
+  it('attaches free-day rest after 5 RAPs when prior free day only sits before the block', () => {
+    // Exact user shape: RAP Aug 13–14, free 15–17 (display SDF), five RAPs
+    // Aug 18–22, then later RAPs Aug 26–29.
+    // 168 h lookback from Aug 22 18:00 starts Aug 15 18:00 — so the free-day
+    // SDF is *inside* the raw lookback but *before* first work in that window
+    // (Aug 18). It is outside the problem period and must not suppress free-day
+    // rest after the fifth RAP.
+    const mkRap = (id: string, day: number): DutyEvent => ({
+      id,
+      title: 'Home Reserve',
+      type: 'reserve',
+      start: zonedWallTime(HOME, 2026, 8, day, 6, 0),
+      end: zonedWallTime(HOME, 2026, 8, day, 18, 0),
+      acclTZ: HOME,
+      workFactor: 0.33,
+    })
+    const schedule = [
+      mkRap('early13', 13),
+      mkRap('early14', 14),
+      ...[18, 19, 20, 21, 22].map((d) => mkRap(`rsv${d}`, d)),
+      ...[26, 27, 28, 29].map((d) => mkRap(`later${d}`, d)),
+    ]
+    const state = recomputeScheduleCompliance(schedule, 'TC', HOME, HOME)
+    const rest = state.find((e) => e.id === restIdForDuty('rsv22'))
+    expect(rest).toBeTruthy()
+    expect(rest!.restRule).toBe('CAR 700.29')
+    expect(rest!.requiredLocalNights).toBeGreaterThanOrEqual(2)
+    expect(rest!.title).toMatch(/free day|SDF/i)
+    expect(rest!.end.getTime()).toBeGreaterThan(
+      rest!.start.getTime() + 12 * 3_600_000,
+    )
+  })
+
+  it('skips post-reserve rest when an FDP is called out from that RAP', () => {
+    const rsv: DutyEvent = {
+      id: 'rsv2',
+      title: 'Home Reserve',
+      type: 'reserve',
+      start: zonedWallTime(HOME, 2026, 8, 12, 6, 0),
+      end: zonedWallTime(HOME, 2026, 8, 12, 10, 25),
+      acclTZ: HOME,
+      workFactor: 0.33,
+    }
+    const duty: DutyEvent = {
+      id: 'fdp2',
+      title: 'Flight Duty',
+      type: 'duty',
+      start: zonedWallTime(HOME, 2026, 8, 12, 10, 25),
+      end: zonedWallTime(HOME, 2026, 8, 12, 18, 0),
+      acclTZ: HOME,
+      rapStart: rsv.start,
+    }
+    expect(availabilitySpawnedCallOut(rsv, [rsv, duty])).toBe(true)
+    expect(
+      buildRequiredRestAfterAvailability(rsv, [rsv, duty], 'TC', HOME),
+    ).toBeNull()
+    const state = recomputeScheduleCompliance([rsv, duty], 'TC', HOME, HOME)
+    // Post-FDP rest exists; no second rest solely from reserve
+    expect(state.filter((e) => e.id === restIdForDuty('rsv2'))).toHaveLength(0)
+    expect(state.some((e) => e.id === restIdForDuty('fdp2'))).toBe(true)
   })
 })

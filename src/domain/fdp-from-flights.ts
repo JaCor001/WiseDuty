@@ -3,6 +3,8 @@
  * Max FDP (CAR 700.28) uses acclimatized start hour — never raw dep-airport local
  * when the member is still acclimatized to another zone (700.28(5)).
  * Optional CAR 700.50 split-duty break extends max FDP and reduces hours of work.
+ * When a reserve RAP is linked (handoff or continuous prior reserve), CAR 700.70
+ * RDP remaining also limits Max FDP (min of 700.28 and remaining RDP).
  */
 import { resolveAcclimatizedTZ } from './acclimatization'
 import { getAirportByIcao } from './airports'
@@ -12,6 +14,11 @@ import {
   formatSplitBreakSummary,
   splitBreakInsideFdp,
 } from './rest-70050'
+import {
+  computeRdpFdpLimit,
+  findLinkedRapStart,
+  type RdpLimitResult,
+} from './rest-70070'
 import type {
   AvgSectorTime,
   DutyEvent,
@@ -46,6 +53,15 @@ export interface FdpFromFlightsInput {
   priorDuties?: DutyEvent[]
   /** Mid-FDP split-duty break (CAR 700.50). */
   splitBreak?: SplitDutyBreak | null
+  /**
+   * Explicit RAP start when combining reserve + FDP (Add Flight handoff).
+   * When omitted, a continuous prior reserve may be auto-detected.
+   */
+  rapStart?: Date | null
+  /** CAR 700.70(10): 24 h notice escape from RDP limit. */
+  rdpNotice24hEscape?: boolean
+  /** CAR 700.70(9): early RAP, no contact 02:00–05:59. */
+  earlyRapNoContact?: boolean
 }
 
 export interface FdpFromFlightsResult {
@@ -79,6 +95,13 @@ export interface FdpFromFlightsResult {
   splitExtensionHours: number
   /** maxFdpHours + splitExtensionHours. */
   extendedMaxFdpHours: number
+  /**
+   * Operational Max FDP: min(extendedMaxFdpHours, remaining RDP) when reserve
+   * is linked; otherwise same as extendedMaxFdpHours.
+   */
+  limitingMaxFdpHours: number
+  /** Full CAR 700.70 RDP analysis when a RAP is linked; null otherwise. */
+  rdpLimit: RdpLimitResult | null
   operatingHours: number
   /** FDP length report→release (includes break). */
   totalDutyHours: number
@@ -258,6 +281,8 @@ export function deriveFdpFromFlights(
     maxFdpHours: 0,
     splitExtensionHours: 0,
     extendedMaxFdpHours: 0,
+    limitingMaxFdpHours: 0,
+    rdpLimit: null,
     operatingHours: 0,
     totalDutyHours: 0,
     hoursOfWorkHours: 0,
@@ -421,6 +446,31 @@ export function deriveFdpFromFlights(
 
   const extendedMaxFdpHours = maxFdpHours + splitExtensionHours
 
+  // CAR 700.70 — when called from reserve, RDP remaining may be more restrictive
+  // than 700.28 alone (AC 700-047 §4.77 / §4.84).
+  let rdpLimit: RdpLimitResult | null = null
+  let limitingMaxFdpHours = extendedMaxFdpHours
+  if (regulator === 'TC') {
+    const prior = input.priorDuties ?? []
+    const rapStart =
+      input.rapStart && !isNaN(input.rapStart.getTime())
+        ? input.rapStart
+        : findLinkedRapStart(prior, report)
+    if (rapStart && rapStart.getTime() <= report.getTime()) {
+      rdpLimit = computeRdpFdpLimit({
+        rapStart,
+        report,
+        acclTZ: accl,
+        maxFdpTableHours: maxFdpHours,
+        extendedMaxFdpHours,
+        splitDutyOnReserve: splitExtensionHours > 0,
+        earlyRapNoContact: !!input.earlyRapNoContact,
+        notice24hEscape: !!input.rdpNotice24hEscape,
+      })
+      limitingMaxFdpHours = rdpLimit.limitingMaxFdpHours
+    }
+  }
+
   const firstCode = first.depIcao
   const lastCode = last.arrIcao
 
@@ -450,6 +500,8 @@ export function deriveFdpFromFlights(
     maxFdpHours,
     splitExtensionHours,
     extendedMaxFdpHours,
+    limitingMaxFdpHours,
+    rdpLimit,
     operatingHours,
     totalDutyHours,
     hoursOfWorkHours,

@@ -206,4 +206,100 @@ describe('deriveFdpFromFlights', () => {
     expect(r.report.getTime()).toBe(reportOverride.getTime())
     expect(r.release.getTime()).toBe(releaseOverride.getTime())
   })
+
+  it('applies CAR 700.70 RDP limit when rapStart is linked (late callout)', () => {
+    // RAP 08:00 Toronto; report ~20:00 → remaining RDP 6 h < table max
+    const TZ = 'America/Toronto'
+    const rapStart = zonedWallTime(TZ, 2026, 7, 11, 8, 0)
+    const dep = zonedWallTime(TZ, 2026, 7, 11, 21, 0)
+    const arr = zonedWallTime(TZ, 2026, 7, 11, 22, 30)
+    const report = zonedWallTime(TZ, 2026, 7, 11, 20, 0)
+    const r = deriveFdpFromFlights({
+      flights: [
+        leg({
+          id: '1',
+          depIcao: 'CYUL',
+          arrIcao: 'CYYZ',
+          dep,
+          arr,
+        }),
+      ],
+      regulator: 'TC',
+      homeBaseTZ: TZ,
+      reportOverride: report,
+      releaseOverride: zonedWallTime(TZ, 2026, 7, 11, 23, 0),
+      rapStart,
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.rdpLimit).not.toBeNull()
+    expect(r.rdpLimit!.limitingSource).toBe('rdp_70070')
+    expect(r.limitingMaxFdpHours).toBeCloseTo(6, 5)
+    expect(r.limitingMaxFdpHours).toBeLessThan(r.extendedMaxFdpHours)
+    // Pure FDP table still available for UI details
+    expect(r.maxFdpHours).toBeGreaterThanOrEqual(9)
+  })
+
+  it('leaves Max FDP at table value when no reserve is linked', () => {
+    const TZ = 'America/Toronto'
+    const dep = zonedWallTime(TZ, 2026, 7, 11, 9, 0)
+    const arr = zonedWallTime(TZ, 2026, 7, 11, 11, 0)
+    const r = deriveFdpFromFlights({
+      flights: [
+        leg({
+          id: '1',
+          depIcao: 'CYUL',
+          arrIcao: 'CYYZ',
+          dep,
+          arr,
+        }),
+      ],
+      regulator: 'TC',
+      homeBaseTZ: TZ,
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.rdpLimit).toBeNull()
+    expect(r.limitingMaxFdpHours).toBe(r.extendedMaxFdpHours)
+  })
+
+  it('auto-detects RAP when reserve bar ends at call (hours before report)', () => {
+    const TZ = 'America/Toronto'
+    const rapStart = zonedWallTime(TZ, 2026, 7, 11, 8, 0)
+    const callTime = zonedWallTime(TZ, 2026, 7, 11, 10, 0)
+    const report = zonedWallTime(TZ, 2026, 7, 11, 20, 0)
+    const dep = zonedWallTime(TZ, 2026, 7, 11, 21, 0)
+    const arr = zonedWallTime(TZ, 2026, 7, 11, 22, 30)
+    const r = deriveFdpFromFlights({
+      flights: [
+        leg({
+          id: '1',
+          depIcao: 'CYUL',
+          arrIcao: 'CYYZ',
+          dep,
+          arr,
+        }),
+      ],
+      regulator: 'TC',
+      homeBaseTZ: TZ,
+      reportOverride: report,
+      releaseOverride: zonedWallTime(TZ, 2026, 7, 11, 23, 0),
+      priorDuties: [
+        {
+          id: 'rsv',
+          title: 'Home Reserve',
+          type: 'reserve',
+          start: rapStart,
+          end: callTime,
+          acclTZ: TZ,
+        },
+      ],
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.rdpLimit).not.toBeNull()
+    expect(r.rdpLimit!.rapStart.getTime()).toBe(rapStart.getTime())
+    expect(r.limitingMaxFdpHours).toBeCloseTo(6, 5)
+    expect(r.rdpLimit!.limitingSource).toBe('rdp_70070')
+  })
 })

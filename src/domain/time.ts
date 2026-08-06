@@ -492,6 +492,135 @@ export function getZuluTimeDisplay(
   return formatTimeDisplay(hhmm, timeFormat)
 }
 
+/** Always 24h pilot-style Zulu: `18:35Z`. */
+export function formatZuluHHmm(instant: Date): string {
+  if (isNaN(instant.getTime())) return ''
+  const utcH = instant.getUTCHours()
+  const utcM = instant.getUTCMinutes()
+  return `${String(utcH).padStart(2, '0')}:${String(utcM).padStart(2, '0')}Z`
+}
+
+/**
+ * Local + Zulu pair for a wall clock entered in `tz`.
+ * Local follows the app 12h/24h setting; Zulu is always `HH:mmZ`.
+ */
+export function wallTimeLocalZulu(
+  dateKey: string,
+  timeHHmm: string,
+  tz: string,
+  timeFormat: '24h' | '12h',
+): { local: string; zulu: string; instant: Date } | null {
+  if (!dateKey || !timeHHmm) return null
+  const instant = parseZonedDateTime(dateKey, timeHHmm, tz)
+  if (isNaN(instant.getTime())) return null
+  return {
+    local: formatTimeDisplay(timeHHmm, timeFormat),
+    zulu: formatZuluHHmm(instant),
+    instant,
+  }
+}
+
+/** UTC `HH:mm` for a local wall clock (no trailing Z). */
+export function localWallToZuluHHmm(
+  dateKey: string,
+  localHHmm: string,
+  tz: string,
+): string {
+  const info = wallTimeLocalZulu(dateKey, localHHmm, tz, '24h')
+  if (!info) return ''
+  return info.zulu.replace(/Z$/i, '')
+}
+
+/**
+ * Convert a Zulu (UTC) clock into local wall date+time in `tz`.
+ *
+ * Anchors the UTC calendar day from the existing local instant when possible
+ * so editing only the Zulu hour keeps continuity; otherwise uses local noon
+ * on `dateKey` as the day anchor.
+ */
+export function zuluHHmmToLocalWall(
+  dateKey: string,
+  zuluHHmm: string,
+  tz: string,
+  existingLocalHHmm?: string,
+): { dateKey: string; timeHHmm: string } | null {
+  if (!zuluHHmm) return null
+  const parts = zuluHHmm.trim().match(/^(\d{1,2}):(\d{2})$/)
+  if (!parts) return null
+  const zh = Number(parts[1])
+  const zm = Number(parts[2])
+  if (
+    !Number.isFinite(zh) ||
+    !Number.isFinite(zm) ||
+    zh < 0 ||
+    zh > 23 ||
+    zm < 0 ||
+    zm > 59
+  ) {
+    return null
+  }
+
+  let base: Date | null = null
+  if (dateKey && existingLocalHHmm) {
+    const inst = parseZonedDateTime(dateKey, existingLocalHHmm, tz)
+    if (!isNaN(inst.getTime())) base = inst
+  }
+  if (!base && dateKey) {
+    const noon = parseZonedDateTime(dateKey, '12:00', tz)
+    if (!isNaN(noon.getTime())) base = noon
+  }
+  if (!base) {
+    // No date yet — treat as today UTC (caller should supply dateKey soon)
+    base = new Date()
+  }
+
+  const instant = new Date(
+    Date.UTC(
+      base.getUTCFullYear(),
+      base.getUTCMonth(),
+      base.getUTCDate(),
+      zh,
+      zm,
+      0,
+      0,
+    ),
+  )
+  return {
+    dateKey: toDateInputValueInTZ(instant, tz),
+    timeHHmm: formatHHmmInTZ(instant, tz),
+  }
+}
+
+/**
+ * Block time (ms) between two wall clocks, each in its own zone.
+ * Returns null if either side is incomplete or end ≤ start.
+ */
+export function blockTimeMs(
+  depDateKey: string,
+  depTimeHHmm: string,
+  depTz: string,
+  arrDateKey: string,
+  arrTimeHHmm: string,
+  arrTz: string,
+): number | null {
+  if (!depDateKey || !depTimeHHmm || !arrDateKey || !arrTimeHHmm) return null
+  const dep = parseZonedDateTime(depDateKey, depTimeHHmm, depTz)
+  const arr = parseZonedDateTime(arrDateKey, arrTimeHHmm, arrTz)
+  if (isNaN(dep.getTime()) || isNaN(arr.getTime())) return null
+  const ms = arr.getTime() - dep.getTime()
+  return ms > 0 ? ms : null
+}
+
+/** Human block duration: `2h 45m`, `45m`, or `—`. */
+export function formatBlockDuration(ms: number | null | undefined): string {
+  if (ms == null || !(ms > 0)) return '—'
+  const m = Math.round(ms / 60_000)
+  const h = Math.floor(m / 60)
+  const mm = m % 60
+  if (h === 0) return `${mm}m`
+  return mm ? `${h}h ${mm}m` : `${h}h`
+}
+
 export interface TimeZoneOption {
   value: string
   label: string

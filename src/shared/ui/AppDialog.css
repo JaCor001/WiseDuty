@@ -10,6 +10,16 @@
   background: color-mix(in srgb, #0f172a 48%, transparent);
 }
 
+/* Warm wash — same family as .marker.NEAR (≈MAX) */
+.app-dialog-overlay.is-tone-amber {
+  background: color-mix(in srgb, #c2410c 22%, color-mix(in srgb, #0f172a 48%, transparent));
+}
+
+/* Critical wash — same family as day-red / delete buttons */
+.app-dialog-overlay.is-tone-danger {
+  background: color-mix(in srgb, #b91c1c 24%, color-mix(in srgb, #0f172a 48%, transparent));
+}
+
 .app-dialog {
   width: min(100%, 22rem);
   padding: 1.1rem 1.15rem 1rem;
@@ -19,6 +29,66 @@
   border: 1px solid var(--border-color, #e2e8f0);
   box-shadow: 0 20px 40px color-mix(in srgb, #0f172a 28%, transparent);
   text-align: left;
+}
+
+/* Amber chrome — matches .marker.NEAR */
+.app-dialog.is-tone-amber {
+  border-color: color-mix(in srgb, #ea580c 50%, var(--border-color, #e2e8f0));
+  background: color-mix(in srgb, #ffedd5 75%, var(--card-bg, #fff));
+  box-shadow:
+    0 20px 40px color-mix(in srgb, #c2410c 18%, transparent),
+    0 0 0 1px color-mix(in srgb, #ea580c 35%, transparent);
+}
+
+.app-dialog.is-tone-amber .app-dialog-title {
+  color: color-mix(in srgb, #c2410c 90%, var(--text-color, #0f172a));
+}
+
+.app-dialog.is-tone-amber .app-dialog-body {
+  color: color-mix(in srgb, #9a3412 55%, var(--text-secondary, #64748b));
+}
+
+/* Red chrome — matches --day-red / delete danger */
+.app-dialog.is-tone-danger {
+  border-color: color-mix(in srgb, var(--day-red-color, #b91c1c) 45%, var(--border-color, #e2e8f0));
+  background: color-mix(in srgb, var(--day-red-bg, #fee2e2) 85%, var(--card-bg, #fff));
+  box-shadow:
+    0 20px 40px color-mix(in srgb, #b91c1c 16%, transparent),
+    0 0 0 1px color-mix(in srgb, #b91c1c 30%, transparent);
+}
+
+.app-dialog.is-tone-danger .app-dialog-title {
+  color: var(--day-red-color, #b91c1c);
+}
+
+.app-dialog.is-tone-danger .app-dialog-body {
+  color: color-mix(in srgb, #991b1b 45%, var(--text-secondary, #64748b));
+}
+
+body.dark .app-dialog.is-tone-amber {
+  border-color: color-mix(in srgb, #f97316 50%, var(--border-color, #334155));
+  background: color-mix(in srgb, #7c2d12 45%, var(--card-bg, #1e293b));
+}
+
+body.dark .app-dialog.is-tone-amber .app-dialog-title {
+  color: color-mix(in srgb, #fdba74 92%, var(--text-color, #f1f5f9));
+}
+
+body.dark .app-dialog.is-tone-amber .app-dialog-body {
+  color: color-mix(in srgb, #fdba74 55%, var(--text-secondary, #94a3b8));
+}
+
+body.dark .app-dialog.is-tone-danger {
+  border-color: color-mix(in srgb, #f87171 40%, var(--border-color, #334155));
+  background: color-mix(in srgb, #7f1d1d 40%, var(--card-bg, #1e293b));
+}
+
+body.dark .app-dialog.is-tone-danger .app-dialog-title {
+  color: #fca5a5;
+}
+
+body.dark .app-dialog.is-tone-danger .app-dialog-body {
+  color: color-mix(in srgb, #fca5a5 50%, var(--text-secondary, #94a3b8));
 }
 
 .app-dialog-title {
@@ -74,15 +144,77 @@
   color: #fff;
 }
 
+/* Amber primary — same warm orange as ≈MAX marker text */
+.app-dialog-btn-primary.is-amber {
+  background: #c2410c;
+  color: #fff;
+}
+
+.app-dialog-btn-primary.is-amber:hover {
+  background: #9a3412;
+}
+
+body.dark .app-dialog-btn-primary.is-amber {
+  background: #ea580c;
+  color: #fff7ed;
+}
+
+/* Toned choice rows — light wash matching marker chips */
+.app-dialog.is-tone-amber .app-dialog-btn-choice {
+  border-color: color-mix(in srgb, #ea580c 40%, var(--border-color, #e2e8f0));
+  background: color-mix(in srgb, #ffedd5 55%, var(--card-bg, #fff));
+  color: color-mix(in srgb, #c2410c 88%, var(--text-color));
+}
+
+.app-dialog.is-tone-amber .app-dialog-btn-choice:hover {
+  background: color-mix(in srgb, #fed7aa 70%, var(--card-bg, #fff));
+}
+
+.app-dialog.is-tone-danger .app-dialog-btn-choice {
+  border-color: color-mix(in srgb, #b91c1c 35%, var(--border-color, #e2e8f0));
+  background: color-mix(in srgb, #fee2e2 70%, var(--card-bg, #fff));
+  color: color-mix(in srgb, #b91c1c 90%, var(--text-color));
+}
+
+.app-dialog.is-tone-danger .app-dialog-btn-choice:hover {
+  background: color-mix(in srgb, #fecaca 75%, var(--card-bg, #fff));
+}
+
+body.dark .app-dialog.is-tone-amber .app-dialog-btn-choice {
+  border-color: color-mix(in srgb, #f97316 45%, var(--border-color));
+  background: color-mix(in srgb, #9a3412 35%, var(--card-bg));
+  color: #fdba74;
+}
+
+body.dark .app-dialog.is-tone-danger .app-dialog-btn-choice {
+  border-color: color-mix(in srgb, #f87171 40%, var(--border-color));
+  background: color-mix(in srgb, #7f1d1d 35%, var(--card-bg));
+  color: #fca5a5;
+}
+
 .app-dialog-choices {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 0.55rem;
   margin: 0 0 1rem;
 }
 
+.app-dialog-choice-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.app-dialog-choice-main {
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+
 .app-dialog-btn-choice {
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
   text-align: left;
   border: 1px solid var(--border-color, #e2e8f0);
   background: color-mix(in srgb, var(--text-color) 4%, var(--card-bg, #fff));
@@ -92,4 +224,33 @@
 
 .app-dialog-btn-choice:hover {
   background: color-mix(in srgb, var(--text-color) 9%, var(--card-bg, #fff));
+}
+
+.app-dialog-btn-detail {
+  flex: 0 0 auto;
+  align-self: stretch;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1px solid var(--border-color, #e2e8f0);
+  color: var(--text-secondary, #64748b);
+  background: color-mix(in srgb, var(--text-color) 3%, var(--card-bg, #fff));
+  white-space: nowrap;
+}
+
+.app-dialog-btn-detail:hover {
+  color: var(--text-color);
+  background: color-mix(in srgb, var(--text-color) 8%, var(--card-bg, #fff));
+}
+
+.app-dialog-choice-detail {
+  margin: 0;
+  padding: 0.55rem 0.65rem;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border-color, #e2e8f0);
+  background: color-mix(in srgb, var(--text-color) 3%, var(--card-bg, #fff));
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--text-secondary, #64748b);
+  white-space: pre-wrap;
 }

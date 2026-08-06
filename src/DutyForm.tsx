@@ -28,6 +28,7 @@ import type {
 } from './domain/types'
 import {
   EVENT_KIND_ORDER,
+  eventKindToDutyType,
   fieldsForEventKind,
   inferEventKind,
   isNonFlightDutyKind,
@@ -36,13 +37,14 @@ import {
 } from './domain/types'
 import { shiftEventFormPayload } from './domain/clone-event'
 import {
+  blockTimeMs,
   daysBetweenDateInputValues,
+  formatBlockDuration,
   formatHHmmInTZ,
-  formatTimeDisplay,
   parseZonedDateTime,
   toDateInputValueInTZ,
 } from './domain/time'
-import FreeTimeInput from './shared/ui/FreeTimeInput'
+import LocalZuluTimeInput from './shared/ui/LocalZuluTimeInput'
 import AirportSelector from './shared/ui/AirportSelector'
 import './DutyForm.css'
 
@@ -221,13 +223,31 @@ function bucketLegVsSplit(
 }
 
 function formatDur(ms: number): string {
-  if (!(ms > 0)) return '—'
-  const m = Math.round(ms / 60_000)
-  const h = Math.floor(m / 60)
-  const mm = m % 60
-  if (h === 0) return `${mm}m`
-  return mm ? `${h}h ${mm}m` : `${h}h`
+  return formatBlockDuration(ms)
 }
+
+/**
+ * Auto block time from draft dep/arr wall clocks.
+ * Uses airport TZs when known; otherwise `fallbackTz` so block still
+ * calculates as soon as dates/times are entered.
+ */
+function draftBlockMs(
+  d: DutyFormDraftLeg,
+  fallbackTz: string,
+): number | null {
+  const depTz = getAirportByIcao(d.depIcao)?.tz || fallbackTz
+  const arrTz = getAirportByIcao(d.arrIcao)?.tz || depTz
+  return blockTimeMs(
+    d.depDate,
+    d.depTime,
+    depTz,
+    d.arrDate,
+    d.arrTime,
+    arrTz,
+  )
+}
+
+
 
 function legSummary(legs: DutyFormDraftLeg[]): string {
   const parts = legs
@@ -304,8 +324,12 @@ export default function DutyForm({
   const [staleLines, setStaleLines] = useState<StaleFieldLine[]>([])
   const [localError, setLocalError] = useState('')
   const [showClonePicker, setShowClonePicker] = useState(false)
-  const [cloneTargetDate, setCloneTargetDate] = useState(defaultDayKey)
+  /** Date currently in the picker input (not yet added to the list). */
+  const [clonePickDate, setClonePickDate] = useState(defaultDayKey)
+  /** Selected clone target days (YYYY-MM-DD), unique, sorted on add. */
+  const [cloneTargetDates, setCloneTargetDates] = useState<string[]>([])
   const [cloneMessage, setCloneMessage] = useState('')
+  const [cloneBusy, setCloneBusy] = useState(false)
   /** Expand Max FDP calculation details in the summary block. */
   const [fdpDetailsOpen, setFdpDetailsOpen] = useState(false)
 
@@ -388,8 +412,9 @@ export default function DutyForm({
     !fdpHandoff
   // During handoff, still show reserve end as summary; start/end for RSV edited before handoff
   const showLocation = fieldSet.has('location') && !fdpHandoff
+  // Available when adding or editing a reserve/standby (not after handoff is active)
   const showAddFlightHandoff =
-    fieldSet.has('addFlightHandoff') && !fdpHandoff && mode === 'add'
+    fieldSet.has('addFlightHandoff') && !fdpHandoff
 
   const parsedLegs: FlightLeg[] = useMemo(() => {
     return legs
@@ -461,6 +486,30 @@ export default function DutyForm({
       const d = resolveReleaseDateTimeFromTime(releaseTime, last.arr, tz)
       if (d) releaseOverride = d
     }
+
+    // CAR 700.70: RAP start when combining reserve + FDP (not standby / 700.71).
+    // RDP uses RAP *start*, not call time. Ending the reserve bar at call-out
+    // (hours before report) is normal and must still apply RDP.
+    let rapStart: Date | null = null
+    if (
+      fdpHandoff &&
+      handoffKind &&
+      eventKindToDutyType(handoffKind) === 'reserve' &&
+      startDate &&
+      startTime
+    ) {
+      const locTz =
+        (locationIcao && getAirportByIcao(locationIcao)?.tz) || acclTZ
+      const d = parseZonedDateTime(startDate, startTime, locTz)
+      if (!isNaN(d.getTime())) rapStart = d
+    } else if (
+      editEvent?.rapStart &&
+      !isNaN(editEvent.rapStart.getTime())
+    ) {
+      // Re-edit of an FDP previously saved from reserve handoff
+      rapStart = editEvent.rapStart
+    }
+
     return deriveFdpFromFlights({
       flights: parsedLegs,
       buffers,
@@ -472,6 +521,7 @@ export default function DutyForm({
         (d) => !editEvent || d.id !== editEvent.id,
       ),
       splitBreak: parsedSplitBreak,
+      rapStart,
     })
   }, [
     parsedLegs,
@@ -486,6 +536,11 @@ export default function DutyForm({
     priorDuties,
     editEvent,
     parsedSplitBreak,
+    fdpHandoff,
+    handoffKind,
+    startDate,
+    startTime,
+    locationIcao,
   ])
 
   /**
@@ -1069,7 +1124,12 @@ export default function DutyForm({
         return null
       }
       const maxAllowed =
-        derived.extendedMaxFdpHours ?? derived.maxFdpHours
+        derived.limitingMaxFdpHours ??
+        derived.extendedMaxFdpHours ??
+        derived.maxFdpHours
+      // Positioning still needs CAR 700.43 agreement when exceedance > 3 h.
+      // Over-max operating FDP is allowed through so Calendar can show the
+      // approaching / UOC choice dialogs (CAR 700.63) after save.
       if (regulator === 'TC' && derived.endsWithPositioning && derived.operatingEnd) {
         const allowed = assertPositioningAllowed({
           start: derived.report,
@@ -1082,18 +1142,6 @@ export default function DutyForm({
           setLocalError(allowed.detail || 'Positioning not allowed.')
           return null
         }
-      } else if (
-        derived.totalDutyHours > maxAllowed + 1e-9 &&
-        !derived.endsWithPositioning
-      ) {
-        const splitNote =
-          derived.splitExtensionHours > 0
-            ? ` (table ${derived.maxFdpHours} h + split +${derived.splitExtensionHours.toFixed(2)} h)`
-            : ''
-        setLocalError(
-          `Duty ${derived.totalDutyHours.toFixed(1)} h exceeds max FDP ${maxAllowed.toFixed(2)} h${splitNote}.`,
-        )
-        return null
       }
 
       return {
@@ -1128,6 +1176,11 @@ export default function DutyForm({
               ? true
               : undefined,
           splitBreak: parsedSplitBreak || undefined,
+          // Always RAP *start* for 700.70 — not reserve end / call time
+          rapStart:
+            eventKindToDutyType(handoffKind) === 'reserve'
+              ? rsvStart
+              : undefined,
         },
       }
     }
@@ -1145,7 +1198,12 @@ export default function DutyForm({
         return null
       }
       const maxAllowed =
-        derived.extendedMaxFdpHours ?? derived.maxFdpHours
+        derived.limitingMaxFdpHours ??
+        derived.extendedMaxFdpHours ??
+        derived.maxFdpHours
+      // Positioning still needs CAR 700.43 agreement when exceedance > 3 h.
+      // Over-max operating FDP is allowed through so Calendar can show the
+      // approaching / UOC choice dialogs (CAR 700.63) after save.
       if (regulator === 'TC' && derived.endsWithPositioning && derived.operatingEnd) {
         const allowed = assertPositioningAllowed({
           start: derived.report,
@@ -1158,18 +1216,6 @@ export default function DutyForm({
           setLocalError(allowed.detail || 'Positioning not allowed.')
           return null
         }
-      } else if (
-        derived.totalDutyHours > maxAllowed + 1e-9 &&
-        !derived.endsWithPositioning
-      ) {
-        const splitNote =
-          derived.splitExtensionHours > 0
-            ? ` (table ${derived.maxFdpHours} h + split +${derived.splitExtensionHours.toFixed(2)} h)`
-            : ''
-        setLocalError(
-          `Duty ${derived.totalDutyHours.toFixed(1)} h exceeds max FDP ${maxAllowed.toFixed(2)} h${splitNote}.`,
-        )
-        return null
       }
 
       return {
@@ -1198,6 +1244,12 @@ export default function DutyForm({
               ? true
               : undefined,
           splitBreak: parsedSplitBreak || undefined,
+          // Preserve / capture RAP start so re-edit keeps 700.70 RDP limit
+          rapStart:
+            derived.rdpLimit?.rapStart ??
+            (editEvent?.rapStart && !isNaN(editEvent.rapStart.getTime())
+              ? editEvent.rapStart
+              : undefined),
         },
       }
     }
@@ -1244,24 +1296,88 @@ export default function DutyForm({
     if (payload) onSubmit(payload)
   }
 
-  const handleClone = () => {
+  const addCloneDate = () => {
+    setLocalError('')
     setCloneMessage('')
-    if (!cloneTargetDate) {
-      setLocalError('Select a date to clone this event to.')
+    if (!clonePickDate) {
+      setLocalError('Pick a date to add.')
       return
     }
+    setCloneTargetDates((prev) => {
+      if (prev.includes(clonePickDate)) return prev
+      return [...prev, clonePickDate].sort()
+    })
+  }
+
+  const removeCloneDate = (day: string) => {
+    setCloneTargetDates((prev) => prev.filter((d) => d !== day))
+    setCloneMessage('')
+  }
+
+  const handleClone = () => {
+    setCloneMessage('')
+    setLocalError('')
+    // Prefer the chip list; if empty, clone the date currently in the picker
+    const targets =
+      cloneTargetDates.length > 0
+        ? [...cloneTargetDates].sort()
+        : clonePickDate
+          ? [clonePickDate]
+          : []
+    if (targets.length === 0) {
+      setLocalError('Add at least one date to clone this event to.')
+      return
+    }
+    // Reflect single-picker convenience in the chip list for feedback
+    if (cloneTargetDates.length === 0 && clonePickDate) {
+      setCloneTargetDates([clonePickDate])
+    }
+
     const payload = buildSubmitPayload()
     if (!payload) return
 
-    const dayDelta = daysBetweenDateInputValues(
-      cloneAnchorDay(),
-      cloneTargetDate,
-    )
-    const shifted = shiftEventFormPayload(payload, dayDelta)
-    void Promise.resolve(onClone(shifted)).then((ok) => {
-      if (ok === false) return
-      setCloneMessage(`Cloned to ${cloneTargetDate}`)
-    })
+    const anchor = cloneAnchorDay()
+    setCloneBusy(true)
+    void (async () => {
+      const okDates: string[] = []
+      const failedDates: string[] = []
+      for (const day of targets) {
+        const dayDelta = daysBetweenDateInputValues(anchor, day)
+        const shifted = shiftEventFormPayload(payload, dayDelta)
+        try {
+          const ok = await Promise.resolve(onClone(shifted))
+          if (ok === false) {
+            failedDates.push(day)
+            // Stop so validation message for this date is visible
+            break
+          }
+          okDates.push(day)
+        } catch {
+          failedDates.push(day)
+          break
+        }
+      }
+      setCloneBusy(false)
+      if (okDates.length === 0) {
+        if (failedDates.length > 0) {
+          setLocalError(
+            `Could not clone to ${failedDates[0]}. Fix the issue and try again.`,
+          )
+        }
+        return
+      }
+      const summary =
+        okDates.length === 1
+          ? `Cloned to ${okDates[0]}`
+          : `Cloned to ${okDates.length} dates: ${okDates.join(', ')}`
+      setCloneMessage(
+        failedDates.length > 0
+          ? `${summary}. Stopped before ${failedDates[0]}.`
+          : summary,
+      )
+      // Clear successfully cloned dates from the selection
+      setCloneTargetDates((prev) => prev.filter((d) => !okDates.includes(d)))
+    })()
   }
 
   const formTitle =
@@ -1270,17 +1386,23 @@ export default function DutyForm({
       : `Add Event · ${dutyDateLabel}`
 
   const renderFlightCard = (leg: DutyFormDraftLeg, index: number) => {
-    const parsed = draftToFlightLeg(leg)
     const depAp = leg.depIcao ? getAirportByIcao(leg.depIcao) : undefined
     const arrAp = leg.arrIcao ? getAirportByIcao(leg.arrIcao) : undefined
-    const dur =
-      parsed && parsed.arr > parsed.dep
-        ? formatDur(parsed.arr.getTime() - parsed.dep.getTime())
-        : null
+    const depTz = depAp?.tz || acclTZ || homeBaseTZ || 'UTC'
+    const arrTz = arrAp?.tz || depTz
+    // Auto block as soon as dep/arr date+time are set (airports optional for TZ)
+    const blockMs = draftBlockMs(leg, depTz)
+    const blockLabel = blockMs != null ? formatDur(blockMs) : null
+    /*
+     * Structure (all info kept):
+     *  Header — title, options, remove (top-right)
+     *  Body   — 2-col grid: airport | airport, date | date, L·Z | L·Z
+     *  Footer — reserved block-time row (always shown for stable layout)
+     */
     return (
       <div className="duty-form-flight" key={leg.id}>
         <div className="duty-form-flight-head">
-          <div className="duty-form-flight-head-left">
+          <div className="duty-form-flight-head-main">
             <strong>Flight {index + 1}</strong>
             <div className="duty-form-flight-toggles">
               {index === 0 && (
@@ -1315,101 +1437,114 @@ export default function DutyForm({
               </label>
             </div>
           </div>
-          <div className="duty-form-flight-head-meta">
-            {dur && (
-              <span className="duty-form-block-time">
-                Block {dur}
-                {leg.isDeadhead ? ' · DH' : ''}
-              </span>
-            )}
-            {legs.length > 1 && (
-              <button
-                type="button"
-                className="duty-form-btn duty-form-btn-danger"
-                onClick={() => removeLeg(leg.id)}
-              >
-                Remove
-              </button>
-            )}
-          </div>
+          {legs.length > 1 && (
+            <button
+              type="button"
+              className="duty-form-btn duty-form-btn-danger duty-form-flight-remove"
+              onClick={() => removeLeg(leg.id)}
+            >
+              Remove
+            </button>
+          )}
         </div>
 
-        <div className="duty-form-flight-grid">
-          <div className="duty-form-endpoint">
-            <span className="duty-form-endpoint-label">Departure</span>
-            <label className="duty-form-field">
-              <span className="duty-form-sr-only">Departure airport</span>
-              <AirportSelector
-                valueIcao={leg.depIcao}
-                onChange={(icao) => updateLeg(leg.id, { depIcao: icao })}
-                placeholder="Dep airport…"
-              />
-            </label>
-            <label className="duty-form-field">
-              <span className="duty-form-sr-only">Departure date</span>
-              <input
-                type="date"
-                value={leg.depDate}
-                onChange={(e) =>
-                  updateLeg(leg.id, { depDate: e.target.value })
-                }
-                aria-label={`Flight ${index + 1} departure date`}
-              />
-            </label>
-            <label className="duty-form-field">
-              <span className="duty-form-sr-only">Departure time</span>
-              <FreeTimeInput
-                value={leg.depTime}
-                onChange={(t) => updateLeg(leg.id, { depTime: t })}
-                timeFormat={timeFormat}
-                aria-label={`Flight ${index + 1} departure time`}
-              />
-            </label>
-            {depAp && leg.depTime && (
-              <span className="time-display">
-                {formatTimeDisplay(leg.depTime, timeFormat)} ·{' '}
-                {depAp.tz.replace(/_/g, ' ')}
-              </span>
-            )}
-          </div>
+        <div className="duty-form-flight-body" role="group" aria-label={`Flight ${index + 1} route`}>
+          <span className="duty-form-flight-col-label" aria-hidden>
+            Dep
+          </span>
+          <span className="duty-form-flight-col-label" aria-hidden>
+            Arr
+          </span>
 
-          <div className="duty-form-endpoint">
-            <span className="duty-form-endpoint-label">Arrival</span>
-            <label className="duty-form-field">
-              <span className="duty-form-sr-only">Arrival airport</span>
-              <AirportSelector
-                valueIcao={leg.arrIcao}
-                onChange={(icao) => updateLeg(leg.id, { arrIcao: icao })}
-                placeholder="Arr airport…"
-              />
-            </label>
-            <label className="duty-form-field">
-              <span className="duty-form-sr-only">Arrival date</span>
-              <input
-                type="date"
-                value={leg.arrDate}
-                onChange={(e) =>
-                  updateLeg(leg.id, { arrDate: e.target.value })
-                }
-                aria-label={`Flight ${index + 1} arrival date`}
-              />
-            </label>
-            <label className="duty-form-field">
-              <span className="duty-form-sr-only">Arrival time</span>
-              <FreeTimeInput
-                value={leg.arrTime}
-                onChange={(t) => updateLeg(leg.id, { arrTime: t })}
-                timeFormat={timeFormat}
-                aria-label={`Flight ${index + 1} arrival time`}
-              />
-            </label>
-            {arrAp && leg.arrTime && (
-              <span className="time-display">
-                {formatTimeDisplay(leg.arrTime, timeFormat)} ·{' '}
-                {arrAp.tz.replace(/_/g, ' ')}
-              </span>
-            )}
-          </div>
+          <label className="duty-form-field duty-form-field--airport">
+            <span className="duty-form-sr-only">Departure airport</span>
+            <AirportSelector
+              valueIcao={leg.depIcao}
+              onChange={(icao) => updateLeg(leg.id, { depIcao: icao })}
+              placeholder="Dep…"
+            />
+          </label>
+          <label className="duty-form-field duty-form-field--airport">
+            <span className="duty-form-sr-only">Arrival airport</span>
+            <AirportSelector
+              valueIcao={leg.arrIcao}
+              onChange={(icao) => updateLeg(leg.id, { arrIcao: icao })}
+              placeholder="Arr…"
+            />
+          </label>
+
+          <label className="duty-form-field duty-form-field--date">
+            <span className="duty-form-sr-only">Departure date</span>
+            <input
+              type="date"
+              value={leg.depDate}
+              onChange={(e) => updateLeg(leg.id, { depDate: e.target.value })}
+              aria-label={`Flight ${index + 1} departure date`}
+            />
+          </label>
+          <label className="duty-form-field duty-form-field--date">
+            <span className="duty-form-sr-only">Arrival date</span>
+            <input
+              type="date"
+              value={leg.arrDate}
+              onChange={(e) => updateLeg(leg.id, { arrDate: e.target.value })}
+              aria-label={`Flight ${index + 1} arrival date`}
+            />
+          </label>
+
+          <label className="duty-form-field duty-form-field--times">
+            <span className="duty-form-sr-only">Departure time</span>
+            <LocalZuluTimeInput
+              layout="row"
+              className="local-zulu-time--compact"
+              dateKey={leg.depDate}
+              value={leg.depTime}
+              onChange={(t) => updateLeg(leg.id, { depTime: t })}
+              onDateChange={(d) => updateLeg(leg.id, { depDate: d })}
+              tz={depTz}
+              timeFormat={timeFormat}
+              ariaLabelLocal={`Flight ${index + 1} departure local time`}
+              ariaLabelZulu={`Flight ${index + 1} departure Zulu time`}
+            />
+          </label>
+          <label className="duty-form-field duty-form-field--times">
+            <span className="duty-form-sr-only">Arrival time</span>
+            <LocalZuluTimeInput
+              layout="row"
+              className="local-zulu-time--compact"
+              dateKey={leg.arrDate}
+              value={leg.arrTime}
+              onChange={(t) => updateLeg(leg.id, { arrTime: t })}
+              onDateChange={(d) => updateLeg(leg.id, { arrDate: d })}
+              tz={arrTz}
+              timeFormat={timeFormat}
+              ariaLabelLocal={`Flight ${index + 1} arrival local time`}
+              ariaLabelZulu={`Flight ${index + 1} arrival Zulu time`}
+            />
+          </label>
+        </div>
+
+        {/* Always reserve this row so layout doesn’t jump when block appears */}
+        <div
+          className={`duty-form-block-row${blockLabel ? ' has-value' : ''}`}
+          aria-live="polite"
+          title={
+            blockLabel
+              ? !depAp || !arrAp
+                ? 'Block time (auto · arr − dep · fallback TZ until airports set)'
+                : 'Block time (auto · arr − dep)'
+              : 'Block time appears when dep and arr date/time are set'
+          }
+        >
+          <span className="duty-form-block-row-label">Block</span>
+          <span className="duty-form-block-row-value">
+            {blockLabel
+              ? `${blockLabel}${leg.isDeadhead ? ' · DH' : ''}`
+              : '—'}
+          </span>
+          <span className="duty-form-block-row-hint">
+            {blockLabel ? 'auto · arr − dep' : 'enter dep & arr times'}
+          </span>
         </div>
       </div>
     )
@@ -1437,35 +1572,59 @@ export default function DutyForm({
           <strong>pre-break flights → this break → post-break flights</strong>.
           Release must be after the last post-break arrival.
         </p>
-        <div className="duty-form-pair">
-          <label className="duty-form-field">
-            Break start
-            <input
-              type="date"
-              value={splitStartDate}
-              onChange={(e) => setSplitStartDate(e.target.value)}
-            />
-            <FreeTimeInput
+        <div className="duty-form-period-stack">
+          <div className="duty-form-period">
+            <span className="duty-form-period-label">Break start</span>
+            <div className="duty-form-period-date">
+              <input
+                type="date"
+                value={splitStartDate}
+                onChange={(e) => setSplitStartDate(e.target.value)}
+                aria-label="Split break start date"
+              />
+            </div>
+            <LocalZuluTimeInput
+              dateKey={splitStartDate}
               value={splitStartTime}
               onChange={setSplitStartTime}
+              onDateChange={setSplitStartDate}
+              tz={
+                (splitLocationIcao &&
+                  getAirportByIcao(splitLocationIcao)?.tz) ||
+                acclTZ ||
+                homeBaseTZ
+              }
               timeFormat={timeFormat}
-              aria-label="Split break start time"
+              ariaLabelLocal="Split break start local time"
+              ariaLabelZulu="Split break start Zulu time"
             />
-          </label>
-          <label className="duty-form-field">
-            Break end
-            <input
-              type="date"
-              value={splitEndDate}
-              onChange={(e) => setSplitEndDate(e.target.value)}
-            />
-            <FreeTimeInput
+          </div>
+          <div className="duty-form-period">
+            <span className="duty-form-period-label">Break end</span>
+            <div className="duty-form-period-date">
+              <input
+                type="date"
+                value={splitEndDate}
+                onChange={(e) => setSplitEndDate(e.target.value)}
+                aria-label="Split break end date"
+              />
+            </div>
+            <LocalZuluTimeInput
+              dateKey={splitEndDate}
               value={splitEndTime}
               onChange={setSplitEndTime}
+              onDateChange={setSplitEndDate}
+              tz={
+                (splitLocationIcao &&
+                  getAirportByIcao(splitLocationIcao)?.tz) ||
+                acclTZ ||
+                homeBaseTZ
+              }
               timeFormat={timeFormat}
-              aria-label="Split break end time"
+              ariaLabelLocal="Split break end local time"
+              ariaLabelZulu="Split break end Zulu time"
             />
-          </label>
+          </div>
         </div>
         <label className="duty-form-field">
           Location (suitable accommodation)
@@ -1554,11 +1713,19 @@ export default function DutyForm({
                 value={endDate}
                 onChange={(e) => setEndDate(e.target.value)}
               />
-              <FreeTimeInput
+              <LocalZuluTimeInput
+                dateKey={endDate}
                 value={endTime}
                 onChange={setEndTime}
+                onDateChange={setEndDate}
+                tz={
+                  (locationIcao && getAirportByIcao(locationIcao)?.tz) ||
+                  acclTZ ||
+                  homeBaseTZ
+                }
                 timeFormat={timeFormat}
-                aria-label="End of reserve or standby"
+                ariaLabelLocal="End of reserve or standby local time"
+                ariaLabelZulu="End of reserve or standby Zulu time"
               />
             </div>
           </label>
@@ -1589,37 +1756,61 @@ export default function DutyForm({
       )}
 
       {showStartEnd && (
-        <div className="duty-form-pair">
-          <label className="duty-form-field">
-            Start
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-            />
-            <FreeTimeInput
+        <div className="duty-form-period-stack">
+          <div className="duty-form-period">
+            <span className="duty-form-period-label">Start</span>
+            <div className="duty-form-period-date">
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                aria-label="Start date"
+              />
+            </div>
+            <LocalZuluTimeInput
+              dateKey={startDate}
               value={startTime}
               onChange={setStartTime}
+              onDateChange={setStartDate}
+              tz={
+                (locationIcao && getAirportByIcao(locationIcao)?.tz) ||
+                acclTZ ||
+                homeBaseTZ
+              }
               timeFormat={timeFormat}
-              aria-label="Start time"
+              ariaLabelLocal="Start local time"
+              ariaLabelZulu="Start Zulu time"
             />
-          </label>
-          <label className="duty-form-field">
-            {isReserveOrStandbyKind(eventKind)
-              ? 'End of reserve/standby'
-              : 'End'}
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-            />
-            <FreeTimeInput
+          </div>
+          <div className="duty-form-period">
+            <span className="duty-form-period-label">
+              {isReserveOrStandbyKind(eventKind)
+                ? 'End of reserve/standby'
+                : 'End'}
+            </span>
+            <div className="duty-form-period-date">
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                aria-label="End date"
+              />
+            </div>
+            <LocalZuluTimeInput
+              dateKey={endDate}
               value={endTime}
               onChange={setEndTime}
+              onDateChange={setEndDate}
+              tz={
+                (locationIcao && getAirportByIcao(locationIcao)?.tz) ||
+                acclTZ ||
+                homeBaseTZ
+              }
               timeFormat={timeFormat}
-              aria-label="End time"
+              ariaLabelLocal="End local time"
+              ariaLabelZulu="End Zulu time"
             />
-          </label>
+          </div>
         </div>
       )}
 
@@ -1645,50 +1836,59 @@ export default function DutyForm({
 
       {showReportRelease && (
         <div
-          className={`duty-form-timing-row${reportOverridden ? ' is-manual' : ''}`}
+          className={`duty-form-timing-block${reportOverridden ? ' is-manual' : ''}`}
           title={
             derived?.ok
               ? derived.reportReason
               : 'Report time before first departure (date from dep, previous day if needed)'
           }
         >
-          <span className="duty-form-timing-title">Report</span>
-          <span
-            className={`duty-form-timing-date${reportDayHint ? ' is-offset' : ''}`}
-            title={
-              reportDayHint ||
-              (firstDepAnchor
-                ? `Local date in ${firstDepAnchor.tz.replace(/_/g, ' ')}`
-                : 'Inferred from first departure')
-            }
-          >
-            {displayReportDate || '—'}
-          </span>
-          <div className="duty-form-timing-time">
-            <FreeTimeInput
+          <div className="duty-form-timing-head">
+            <span className="duty-form-timing-title">Report</span>
+            <span
+              className={`duty-form-timing-date${reportDayHint ? ' is-offset' : ''}`}
+              title={
+                reportDayHint ||
+                (firstDepAnchor
+                  ? `Local date in ${firstDepAnchor.tz.replace(/_/g, ' ')}`
+                  : 'Inferred from first departure')
+              }
+            >
+              {displayReportDate || '—'}
+            </span>
+            <button
+              type="button"
+              className="duty-form-btn duty-form-timing-auto"
+              onClick={recalculateReport}
+              disabled={!firstDepAnchor && !parsedLegs[0] && !derived?.ok}
+              title={
+                derived?.ok
+                  ? `Recalculate: ${derived.reportReason}`
+                  : 'Recalculate report from first departure − report buffer'
+              }
+              aria-label="Recalculate report time from departure"
+            >
+              Auto
+            </button>
+          </div>
+          <div className="duty-form-timing-clocks">
+            <LocalZuluTimeInput
+              dateKey={displayReportDate || reportDate}
               value={reportTime}
               onChange={(t) => {
                 setReportOverridden(true)
                 setReportTime(t)
               }}
+              onDateChange={(d) => {
+                setReportOverridden(true)
+                setReportDate(d)
+              }}
+              tz={firstDepAnchor?.tz || acclTZ || homeBaseTZ}
               timeFormat={timeFormat}
-              aria-label="Report time"
+              ariaLabelLocal="Report local time"
+              ariaLabelZulu="Report Zulu time"
             />
           </div>
-          <button
-            type="button"
-            className="duty-form-btn duty-form-timing-auto"
-            onClick={recalculateReport}
-            disabled={!firstDepAnchor && !parsedLegs[0] && !derived?.ok}
-            title={
-              derived?.ok
-                ? `Recalculate: ${derived.reportReason}`
-                : 'Recalculate report from first departure − report buffer'
-            }
-            aria-label="Recalculate report time from departure"
-          >
-            Auto
-          </button>
         </div>
       )}
 
@@ -1771,52 +1971,61 @@ export default function DutyForm({
 
       {showReportRelease && (
         <div
-          className={`duty-form-timing-row${releaseOverridden ? ' is-manual' : ''}`}
+          className={`duty-form-timing-block${releaseOverridden ? ' is-manual' : ''}`}
           title={
             derived?.ok
               ? derived.releaseReason
               : 'Release time after last arrival (date from arr, next day if needed)'
           }
         >
-          <span className="duty-form-timing-title">Release</span>
-          <span
-            className={`duty-form-timing-date${releaseDayHint ? ' is-offset' : ''}`}
-            title={
-              releaseDayHint ||
-              (lastArrAnchor
-                ? `Local date in ${lastArrAnchor.tz.replace(/_/g, ' ')}`
-                : 'Inferred from last arrival')
-            }
-          >
-            {displayReleaseDate || '—'}
-          </span>
-          <div className="duty-form-timing-time">
-            <FreeTimeInput
+          <div className="duty-form-timing-head">
+            <span className="duty-form-timing-title">Release</span>
+            <span
+              className={`duty-form-timing-date${releaseDayHint ? ' is-offset' : ''}`}
+              title={
+                releaseDayHint ||
+                (lastArrAnchor
+                  ? `Local date in ${lastArrAnchor.tz.replace(/_/g, ' ')}`
+                  : 'Inferred from last arrival')
+              }
+            >
+              {displayReleaseDate || '—'}
+            </span>
+            <button
+              type="button"
+              className="duty-form-btn duty-form-timing-auto"
+              onClick={recalculateRelease}
+              disabled={
+                parsedLegs.length === 0 && !lastArrAnchor && !derived?.ok
+              }
+              title={
+                derived?.ok
+                  ? `Recalculate: ${derived.releaseReason}`
+                  : 'Recalculate release from last arrival + release buffer'
+              }
+              aria-label="Recalculate release time from arrival"
+            >
+              Auto
+            </button>
+          </div>
+          <div className="duty-form-timing-clocks">
+            <LocalZuluTimeInput
+              dateKey={displayReleaseDate || releaseDate}
               value={releaseTime}
               onChange={(t) => {
                 setReleaseOverridden(true)
                 setReleaseTime(t)
               }}
+              onDateChange={(d) => {
+                setReleaseOverridden(true)
+                setReleaseDate(d)
+              }}
+              tz={lastArrAnchor?.tz || acclTZ || homeBaseTZ}
               timeFormat={timeFormat}
-              aria-label="Release time"
+              ariaLabelLocal="Release local time"
+              ariaLabelZulu="Release Zulu time"
             />
           </div>
-          <button
-            type="button"
-            className="duty-form-btn duty-form-timing-auto"
-            onClick={recalculateRelease}
-            disabled={
-              parsedLegs.length === 0 && !lastArrAnchor && !derived?.ok
-            }
-            title={
-              derived?.ok
-                ? `Recalculate: ${derived.releaseReason}`
-                : 'Recalculate release from last arrival + release buffer'
-            }
-            aria-label="Recalculate release time from arrival"
-          >
-            Auto
-          </button>
         </div>
       )}
 
@@ -1828,16 +2037,31 @@ export default function DutyForm({
             <p className="duty-form-derived-max">
               <strong>Max FDP</strong>{' '}
               <span className="duty-form-derived-value">
-                {derived.splitExtensionHours > 0
-                  ? `${derived.extendedMaxFdpHours.toFixed(2)} h`
-                  : `${derived.maxFdpHours} h`}
+                {Number.isInteger(derived.limitingMaxFdpHours)
+                  ? `${derived.limitingMaxFdpHours} h`
+                  : `${derived.limitingMaxFdpHours.toFixed(2)} h`}
               </span>
-              {derived.splitExtensionHours > 0 && (
+              {derived.rdpLimit &&
+                derived.rdpLimit.limitingSource === 'rdp_70070' && (
+                  <span className="duty-form-derived-sub">
+                    {' '}
+                    (RDP-limited)
+                  </span>
+                )}
+              {!derived.rdpLimit && derived.splitExtensionHours > 0 && (
                 <span className="duty-form-derived-sub">
                   {' '}
                   (table {derived.maxFdpHours} h + split)
                 </span>
               )}
+              {derived.rdpLimit &&
+                derived.rdpLimit.limitingSource !== 'rdp_70070' &&
+                derived.splitExtensionHours > 0 && (
+                  <span className="duty-form-derived-sub">
+                    {' '}
+                    (table {derived.maxFdpHours} h + split)
+                  </span>
+                )}
             </p>
             <button
               type="button"
@@ -1855,39 +2079,55 @@ export default function DutyForm({
               className="duty-form-derived-details"
             >
               <p>
-                Table max {derived.maxFdpHours} h
+                <strong>700.28</strong> {derived.maxFdpHours} h
                 {derived.splitExtensionHours > 0
-                  ? ` + split +${derived.splitExtensionHours.toFixed(2)} h = ${derived.extendedMaxFdpHours.toFixed(2)} h`
-                  : ''}{' '}
-                · {derived.operatingSectors || 0} operating sector
-                {derived.operatingSectors === 1 ? '' : 's'} · avg{' '}
+                  ? ` + split ${derived.splitExtensionHours.toFixed(2)} h = ${derived.extendedMaxFdpHours.toFixed(2)} h`
+                  : ''}
+                {' · '}
+                start {String(derived.acclimatizedStartHour).padStart(2, '0')}:xx
+                {' · '}
+                {derived.operatingSectors || 0} sector
+                {derived.operatingSectors === 1 ? '' : 's'}
+                {' · avg '}
                 {derived.avgSectorTime === '<30'
                   ? '<30 min'
                   : derived.avgSectorTime === '30-50'
                     ? '30–50 min'
                     : '≥50 min'}
               </p>
+              {derived.rdpLimit && (
+                <p>
+                  <strong>700.70 RDP</strong>{' '}
+                  max {derived.rdpLimit.maxRdpHours} h
+                  {' · RAP '}
+                  {String(derived.rdpLimit.rapStartHour).padStart(2, '0')}:xx
+                  {' · RAP→report '}
+                  {derived.rdpLimit.elapsedRapToReportHours.toFixed(2)} h
+                  {' · left for FDP '}
+                  {derived.rdpLimit.remainingRdpForFdpHours.toFixed(2)} h
+                  {derived.rdpLimit.splitRdpExtensionHours > 0
+                    ? ` · +${derived.rdpLimit.splitRdpExtensionHours} h split`
+                    : ''}
+                </p>
+              )}
+              {derived.rdpLimit && (
+                <p>
+                  <strong>Limiting</strong>{' '}
+                  {derived.limitingMaxFdpHours.toFixed(2)} h
+                  {derived.rdpLimit.limitingSource === 'rdp_70070'
+                    ? ' (RDP)'
+                    : derived.rdpLimit.limitingSource === 'notice_24h_escape'
+                      ? ' (700.28 · 24h notice)'
+                      : ' (700.28)'}
+                </p>
+              )}
               <p>
                 Duty {derived.totalDutyHours.toFixed(1)} h
                 {derived.splitExtensionHours > 0
-                  ? ` · hours of work ${derived.hoursOfWorkHours.toFixed(1)} h (break excluded)`
+                  ? ` · work ${derived.hoursOfWorkHours.toFixed(1)} h`
                   : ''}
-                {derived.endsWithPositioning && derived.operatingEnd
-                  ? ` · operating to ${derived.operatingEnd.toLocaleString()} · trailing DH (700.43)`
-                  : ''}
+                {derived.endsWithPositioning ? ' · trailing DH' : ''}
               </p>
-              {derived.splitBreakSummary && (
-                <p className="form-hint">{derived.splitBreakSummary}</p>
-              )}
-              <p>
-                <strong>CAR 700.28 start</strong>{' '}
-                {String(derived.acclimatizedStartHour).padStart(2, '0')}:xx
-                acclimatized ({derived.acclTZ.replace(/_/g, ' ')})
-                {derived.localStartHour !== derived.acclimatizedStartHour
-                  ? ` · local dep ${String(derived.localStartHour).padStart(2, '0')}:xx (${derived.startTZ.replace(/_/g, ' ')}) — not used for table`
-                  : ` · same as dep local`}
-              </p>
-              <p className="form-hint">{derived.acclimatizationReason}</p>
             </div>
           )}
         </div>
@@ -1896,7 +2136,11 @@ export default function DutyForm({
       {showFdpSummary &&
         derived?.ok &&
         derived.endsWithPositioning &&
-        derived.totalDutyHours - (derived.extendedMaxFdpHours ?? derived.maxFdpHours) > 3 && (
+        derived.totalDutyHours -
+          (derived.limitingMaxFdpHours ??
+            derived.extendedMaxFdpHours ??
+            derived.maxFdpHours) >
+          3 && (
           <label className="checkbox-label">
             <input
               type="checkbox"
@@ -1947,45 +2191,102 @@ export default function DutyForm({
             className="duty-form-btn duty-form-btn-secondary"
             onClick={() => {
               setShowClonePicker(true)
-              setCloneTargetDate(defaultDayKey)
+              setClonePickDate(defaultDayKey)
+              setCloneTargetDates([])
               setCloneMessage('')
             }}
           >
-            Clone to date…
+            Clone to date(s)…
           </button>
         ) : (
           <>
             <label className="duty-form-clone-label">
-              Clone to
+              Clone to dates
+              <span className="duty-form-clone-hint">
+                Add one or more days, then clone. Wall times stay the same on
+                each day.
+              </span>
               <div className="duty-form-row duty-form-clone-row">
                 <input
                   type="date"
-                  value={cloneTargetDate}
+                  value={clonePickDate}
                   onChange={(e) => {
-                    setCloneTargetDate(e.target.value)
+                    setClonePickDate(e.target.value)
                     setCloneMessage('')
                   }}
-                  aria-label="Clone target date"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      addCloneDate()
+                    }
+                  }}
+                  aria-label="Date to add for clone"
+                  disabled={cloneBusy}
                 />
                 <button
                   type="button"
-                  className="duty-form-btn duty-form-btn-secondary duty-form-clone-confirm"
-                  onClick={handleClone}
+                  className="duty-form-btn duty-form-btn-secondary duty-form-clone-add"
+                  onClick={addCloneDate}
+                  disabled={cloneBusy || !clonePickDate}
                 >
-                  Clone
+                  Add
                 </button>
               </div>
             </label>
-            <button
-              type="button"
-              className="duty-form-btn duty-form-btn-ghost duty-form-clone-dismiss"
-              onClick={() => {
-                setShowClonePicker(false)
-                setCloneMessage('')
-              }}
-            >
-              Hide clone
-            </button>
+
+            {cloneTargetDates.length > 0 && (
+              <ul
+                className="duty-form-clone-chips"
+                aria-label="Selected clone dates"
+              >
+                {cloneTargetDates.map((day) => (
+                  <li key={day} className="duty-form-clone-chip">
+                    <span>{day}</span>
+                    <button
+                      type="button"
+                      className="duty-form-clone-chip-remove"
+                      onClick={() => removeCloneDate(day)}
+                      aria-label={`Remove ${day}`}
+                      disabled={cloneBusy}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className="duty-form-row duty-form-clone-actions">
+              <button
+                type="button"
+                className="duty-form-btn duty-form-btn-secondary duty-form-clone-confirm"
+                onClick={handleClone}
+                disabled={
+                  cloneBusy ||
+                  (cloneTargetDates.length === 0 && !clonePickDate)
+                }
+              >
+                {cloneBusy
+                  ? 'Cloning…'
+                  : cloneTargetDates.length > 1
+                    ? `Clone to ${cloneTargetDates.length} dates`
+                    : cloneTargetDates.length === 1
+                      ? 'Clone to 1 date'
+                      : 'Clone'}
+              </button>
+              <button
+                type="button"
+                className="duty-form-btn duty-form-btn-ghost duty-form-clone-dismiss"
+                onClick={() => {
+                  setShowClonePicker(false)
+                  setCloneTargetDates([])
+                  setCloneMessage('')
+                }}
+                disabled={cloneBusy}
+              >
+                Hide clone
+              </button>
+            </div>
           </>
         )}
         {cloneMessage && (

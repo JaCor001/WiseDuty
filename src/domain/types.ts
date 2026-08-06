@@ -330,6 +330,23 @@ export interface DutyEvent {
    * the duty. Extends max FDP and is excluded from hours of work.
    */
   splitBreak?: SplitDutyBreak
+  /**
+   * RAP start when this FDP was assigned from reserve (CAR 700.70 RDP).
+   * RDP = rapStart → FDP end. Often the reserve bar ends at call-out, hours
+   * before report — rapStart is still the original RAP start, not call time.
+   */
+  rapStart?: Date
+  /**
+   * Original scheduled start for reserve/standby before auto-adjustment for a
+   * prior FDP/rest. Auto-moves never set start earlier than this.
+   */
+  scheduledStart?: Date
+  /**
+   * When set on reserve/standby, start is tied to this duty’s release/rest:
+   * re-saves of that duty re-slide start to clear duty/rest, floored at
+   * {@link scheduledStart}.
+   */
+  startDependsOnDutyId?: string
   /** Provenance when created via calendar import. */
   importSource?: {
     calendarId?: string
@@ -379,6 +396,12 @@ export interface StoredDutyEvent {
   reportOverridden?: boolean
   releaseOverridden?: boolean
   splitBreak?: StoredSplitDutyBreak
+  /** ISO instant of RAP start for 700.70 RDP (see DutyEvent.rapStart). */
+  rapStart?: string
+  /** ISO original scheduled start (reserve/standby auto-adjust floor). */
+  scheduledStart?: string
+  /** Duty id that drives auto start slides for this reserve/standby. */
+  startDependsOnDutyId?: string
   importSource?: {
     calendarId?: string
     eventIds?: string[]

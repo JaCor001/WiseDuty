@@ -1,0 +1,86 @@
+.local-zulu-time {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  margin-top: 0.25rem;
+  box-sizing: border-box;
+  gap: 0.35rem;
+}
+
+/* Default: L | Z side by side (report, start/end, flight halves) */
+.local-zulu-time--row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+/* Stack: L above Z (optional denser vertical when needed) */
+.local-zulu-time--stack {
+  grid-template-columns: 1fr;
+  gap: 0.3rem;
+}
+
+.local-zulu-time .free-time-input {
+  margin-top: 0;
+  min-width: 0;
+  width: 100%;
+}
+
+.local-zulu-time .free-time-input-field {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  /* Right pad matches single-letter L/Z badge — not the wide 12h/24h chip */
+  padding: 0.48rem 1.65rem 0.48rem 0.5rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  text-overflow: clip;
+}
+
+/* Tighter clocks inside half-width flight columns */
+.local-zulu-time--compact {
+  gap: 0.28rem;
+  margin-top: 0;
+}
+
+.local-zulu-time--compact .free-time-input-field {
+  padding: 0.4rem 1.5rem 0.4rem 0.4rem;
+  font-size: 0.88rem;
+  min-height: 2.15rem;
+  text-overflow: clip;
+}
+
+.local-zulu-time--compact .free-time-input-hint {
+  min-width: 1.1rem;
+  max-width: 1.25rem;
+  padding: 0.08rem 0.16rem;
+  font-size: 0.58rem;
+  right: 0.22rem;
+}
+
+.local-zulu-time .free-time-input-hint {
+  min-width: 1.15rem;
+  max-width: 1.35rem;
+  padding: 0.1rem 0.18rem;
+  font-size: 0.6rem;
+  right: 0.28rem;
+}
+
+/* Zulu badge — quiet distinction from L */
+.local-zulu-time .local-zulu-time-half:last-child .free-time-input-hint {
+  color: color-mix(in srgb, #0f766e 55%, var(--text-color));
+  background: color-mix(in srgb, #0f766e 10%, var(--card-bg, #fff));
+  border-color: color-mix(in srgb, #0f766e 18%, transparent);
+}
+
+.local-zulu-time.is-local-only .local-zulu-time-half:last-child {
+  opacity: 0.55;
+}
+
+.local-zulu-time.is-local-only .local-zulu-time-half:last-child .free-time-input-field {
+  cursor: not-allowed;
+}
+
+.duty-form-field > .local-zulu-time,
+.duty-form-timing-clocks .local-zulu-time,
+.duty-form-period .local-zulu-time {
+  margin-top: 0;
+}

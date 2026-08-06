@@ -5,7 +5,7 @@ import type {
   RestType,
   StoredDutyEvent,
 } from './types'
-import { SCHEDULE_SCHEMA_VERSION } from './types'
+import { isWorkEvent, SCHEDULE_SCHEMA_VERSION } from './types'
 import {
   addCivilDaysInTimeZone,
   startOfDayInTimeZone,
@@ -31,7 +31,9 @@ import {
 } from './rest-70042'
 import {
   buildSingleDaysFree,
-  countSdfsInWindow,
+  CONSECUTIVE_WORK_DAYS_FOR_SDF,
+  countConsecutiveWorkCalendarDays,
+  countSdfsAfterWorkStartedInWindow,
   detectLocalNightsFromEvents,
   getWorkHoursInWindow,
   isSdfAbsolutelyRequired,
@@ -103,6 +105,9 @@ export function serializeEvents(events: DutyEvent[]): StoredDutyEvent[] {
           unforeseenReplan: e.splitBreak.unforeseenReplan,
         }
       : undefined,
+    rapStart: e.rapStart?.toISOString(),
+    scheduledStart: e.scheduledStart?.toISOString(),
+    startDependsOnDutyId: e.startDependsOnDutyId,
     importSource: e.importSource,
   }))
 }
@@ -172,6 +177,17 @@ export function deserializeEvents(stored: StoredDutyEvent[]): DutyEvent[] {
             unforeseenReplan: e.splitBreak.unforeseenReplan,
           }
         })(),
+        rapStart: (() => {
+          if (!e.rapStart) return undefined
+          const d = new Date(e.rapStart)
+          return isNaN(d.getTime()) ? undefined : d
+        })(),
+        scheduledStart: (() => {
+          if (!e.scheduledStart) return undefined
+          const d = new Date(e.scheduledStart)
+          return isNaN(d.getTime()) ? undefined : d
+        })(),
+        startDependsOnDutyId: e.startDependsOnDutyId,
         importSource: e.importSource,
       }
     })
@@ -245,6 +261,10 @@ export function eventsOnLocalDay(
   return events.filter((e) => e.start < dayEnd && e.end > dayStart)
 }
 
+/**
+ * Remove a duty **or** reserve/standby and its managed rest (`{id}-rest`),
+ * plus split-break rest when present. Caller should recompute compliance.
+ */
 export function removeDutyAndRelated(
   events: DutyEvent[],
   duty: DutyEvent,
@@ -439,54 +459,86 @@ export function applyDisruptiveScheduleToPlan(
 }
 
 /**
- * Fold CAR 700.29 single day free from duty into the post-duty rest plan.
+ * Fold CAR 700.29 single day free from duty into a post-work rest plan.
  *
- * Only when free day is **absolutely required** (cannot legally defer past the
- * next FDP, or the week is already closed). Do not attach merely because work
- * is under 60 h but “dense” — another legal FDP may still fit first.
+ * `workEvent` may be a duty **or** reserve/standby (hours of work under 700.29).
+ * Free-day structure is only attached when absolutely required (cannot legally
+ * defer past the next work period, or the week is already closed).
  *
  * When attached, rest ends at the **earliest legal free-day completion**.
  */
 export function applySdfStructureToPlan(
   plan: TimeZoneRestPlan,
-  duty: DutyEvent,
+  workEvent: DutyEvent,
   scheduleEvents: DutyEvent[],
   regulator: Regulator,
   globalAcclTZ: string,
-  nextDuty?: DutyEvent,
+  /** Next work event (duty, reserve, or standby) after this release. */
+  nextWork?: DutyEvent,
 ): TimeZoneRestPlan {
   if (regulator !== 'TC') return plan
 
-  const windowEnd = duty.end
+  const windowEnd = workEvent.end
   const windowStart = new Date(windowEnd.getTime() - MS_168H)
   const workH = getWorkHoursInWindow(scheduleEvents, windowStart, windowEnd)
   const span = workActivitySpanHours(scheduleEvents, windowStart, windowEnd)
-  if (!shouldRequireSdfIn168(workH, span)) return plan
+  const accl = dutyAcclTZ(workEvent, globalAcclTZ)
+  const consecutiveDays = countConsecutiveWorkCalendarDays(
+    scheduleEvents,
+    workEvent.end,
+    accl,
+  )
+  if (!shouldRequireSdfIn168(workH, span, consecutiveDays)) return plan
 
   const lnrs = detectLocalNightsFromEvents(scheduleEvents, globalAcclTZ)
   const sdfs = buildSingleDaysFree(lnrs, scheduleEvents)
-  if (countSdfsInWindow(sdfs, windowStart, windowEnd) >= 1) return plan
+  // Only free days that start after work has begun in this lookback count as
+  // already covering structure. A free weekend sitting only in the leading gap
+  // (before the first RAP/duty of the window) is outside the problem period —
+  // even though a raw 168 h lookback from the last release still contains it.
+  // ≥5 consecutive work days still force free-day rest after the block.
+  const coveringAfterWork = countSdfsAfterWorkStartedInWindow(
+    sdfs,
+    scheduleEvents,
+    windowStart,
+    windowEnd,
+  )
+  if (
+    consecutiveDays < CONSECUTIVE_WORK_DAYS_FOR_SDF &&
+    coveringAfterWork >= 1
+  ) {
+    return plan
+  }
 
-  const accl = dutyAcclTZ(duty, globalAcclTZ)
   if (
     !isSdfAbsolutelyRequired({
-      dutyEnd: duty.end,
-      nextDutyStart: nextDuty?.start,
-      nextDutyEnd: nextDuty?.end,
+      dutyEnd: workEvent.end,
+      nextDutyStart: nextWork?.start,
+      nextDutyEnd: nextWork?.end,
       scheduleEvents,
       acclTZ: accl,
+      lastWorkEvent: workEvent,
     })
   ) {
     return plan
   }
 
-  const earliestSdfEnd = earliestLocalNightsRestEnd(duty.end, accl, 2)
+  const earliestSdfEnd = earliestLocalNightsRestEnd(workEvent.end, accl, 2)
   const priorNights = plan.localNights
   const localNights = Math.max(plan.localNights, 2)
-  const reason = nextDuty
-    ? `the next flight duty period starts at ${nextDuty.start.toLocaleString()}, and free day cannot wait until after it — free day must begin after this release (earliest free-day end ${earliestSdfEnd.toLocaleString()})`
-    : `another flight duty period cannot be added after this release without leaving insufficient room for a single day free from duty in the rolling 168 h window — free day is required now (earliest free-day end ${earliestSdfEnd.toLocaleString()}), same idea as required rest shown before the next duty is scheduled`
-  const sdfWhy = `In the 168 h ending at this release there are ${workH.toFixed(1)} h of work over ${span.toFixed(0)} h of activity and no single day free from duty fully inside the window. CAR 700.29(1)(c): free day is required when further duty would make it impossible to complete. ${reason}.`
+  const kindLabel =
+    workEvent.type === 'reserve'
+      ? 'reserve period'
+      : workEvent.type === 'standby'
+        ? 'standby period'
+        : 'release'
+  const reason =
+    consecutiveDays >= CONSECUTIVE_WORK_DAYS_FOR_SDF
+      ? `${consecutiveDays} consecutive local calendar days of work end at this ${kindLabel} — free day is required after this block (earliest free-day end ${earliestSdfEnd.toLocaleString()}), even if an earlier free day sits elsewhere in the 168 h window`
+      : nextWork
+        ? `the next work period (${nextWork.type}) starts at ${nextWork.start.toLocaleString()}, and free day cannot wait until after it — free day must begin after this ${kindLabel} (earliest free-day end ${earliestSdfEnd.toLocaleString()})`
+        : `further work cannot be added after this ${kindLabel} without leaving insufficient room for a single day free from duty in the rolling 168 h window — free day is required now (earliest free-day end ${earliestSdfEnd.toLocaleString()})`
+  const sdfWhy = `In the 168 h ending at this ${kindLabel} there are ${workH.toFixed(1)} h of work (duty 100%, standby 100%, reserve 33%) over ${span.toFixed(0)} h of activity and no single day free from duty fully inside the window. CAR 700.29(1)(c): free day is required when further work would make it impossible to complete. ${reason}.`
 
   if (priorNights < 2) {
     if (priorNights < 1) {
@@ -510,6 +562,119 @@ export function applySdfStructureToPlan(
     ...plan,
     localNights,
     why: `${plan.why} Additionally: ${sdfWhy}`,
+  }
+}
+
+/** Slack after availability end still treated as call-out from that RAP/stby. */
+const AVAIL_CALL_OUT_SLACK_MS = 2 * 3_600_000
+
+/**
+ * True when a duty is a call-out from this reserve/standby (stored RAP start
+ * inside the period, or report during / shortly after the period).
+ * When true, post-FDP rest is owned by the duty — do not also rest after RAP.
+ */
+export function availabilitySpawnedCallOut(
+  avail: DutyEvent,
+  events: DutyEvent[],
+): boolean {
+  if (avail.type !== 'reserve' && avail.type !== 'standby') return false
+  const a0 = avail.start.getTime()
+  const a1 = avail.end.getTime()
+  return events.some((e) => {
+    if (e.type !== 'duty') return false
+    if (e.rapStart && !isNaN(e.rapStart.getTime())) {
+      const r = e.rapStart.getTime()
+      if (r >= a0 - 1000 && r <= a1 + AVAIL_CALL_OUT_SLACK_MS) return true
+    }
+    const s = e.start.getTime()
+    return s >= a0 - 1000 && s <= a1 + AVAIL_CALL_OUT_SLACK_MS
+  })
+}
+
+/**
+ * Required rest after reserve or standby that did **not** produce an FDP
+ * (pilot not called / no assignment during the period).
+ *
+ * Regulatory basis (TC):
+ * - Standby and reserve count as hours of work (700.29(3): 100% / 33%).
+ * - CAR 700.40 minimum rest (12 h TC) is required **before further duty** after
+ *   a period of duty-like availability ends without an intervening FDP rest.
+ * - When a call-out FDP exists, rest is the post-FDP rest only (skip here).
+ * - CAR 700.29 free-day structure attaches when the rolling 168 h window ending
+ *   at availability end makes free day absolutely required (same gates as FDP).
+ */
+export function buildRequiredRestAfterAvailability(
+  avail: DutyEvent,
+  allEvents: DutyEvent[],
+  regulator: Regulator,
+  globalAcclTZ: string,
+): DutyEvent | null {
+  if (avail.type !== 'reserve' && avail.type !== 'standby') return null
+  if (availabilitySpawnedCallOut(avail, allEvents)) return null
+
+  const hours = getMinRestHours(regulator)
+  const accl = dutyAcclTZ(avail, globalAcclTZ)
+  const work = allEvents
+    .filter(
+      (e) =>
+        (e.type === 'duty' || e.type === 'reserve' || e.type === 'standby') &&
+        e.id !== avail.id,
+    )
+    .sort((a, b) => a.start.getTime() - b.start.getTime())
+  const nextWork = work.find((w) => w.start.getTime() >= avail.end.getTime() - 500)
+
+  const baseWhy =
+    avail.type === 'standby'
+      ? 'Standby ended without an assigned flight duty period. Minimum rest under CAR 700.40 applies before further duty (standby is 100% hours of work under 700.29(3)).'
+      : 'Reserve availability period ended without call-out (no FDP from this RAP). Minimum rest under CAR 700.40 applies before further duty (reserve is 33% hours of work under 700.29(3)).'
+
+  let plan: TimeZoneRestPlan = {
+    restHours: hours,
+    localNights: 0,
+    restKind: 'base',
+    restRule: 'CAR 700.40',
+    why: baseWhy,
+  }
+
+  // Schedule without managed rests for 700.29 scan
+  const scheduleForScan = allEvents.filter(
+    (e) => !(e.type === 'rest' && e.id.endsWith('-rest')),
+  )
+  plan = applySdfStructureToPlan(
+    plan,
+    avail,
+    scheduleForScan,
+    regulator,
+    globalAcclTZ,
+    nextWork,
+  )
+
+  const { start, end } = plannedRestInterval(avail.end, plan, accl)
+  const isLnr = plan.localNights > 0
+  const title =
+    plan.localNights >= 2
+      ? 'Required Rest — free day (700.29)'
+      : plan.localNights === 1
+        ? 'Required Rest — 1× local night'
+        : avail.type === 'standby'
+          ? 'Required Rest after standby'
+          : 'Required Rest after reserve'
+
+  return {
+    id: restIdForDuty(avail.id),
+    title,
+    start,
+    end,
+    type: 'rest',
+    acclTZ: accl,
+    restKind: plan.restKind,
+    restRule: plan.restRule,
+    requiredRestHours: plan.restHours,
+    requiredLocalNights: plan.localNights > 0 ? plan.localNights : undefined,
+    isLocalNightRest: isLnr,
+    ruleWhy: plan.why,
+    violated: false,
+    baseRestType: '12h',
   }
 }
 
@@ -551,8 +716,14 @@ export function buildRequiredRestForDuty(
     duties.sort((a, b) => a.start.getTime() - b.start.getTime())
   }
   const idx = duties.findIndex((d) => d.id === duty.id)
-  const next = idx >= 0 ? duties[idx + 1] : undefined
+  const nextDuty = idx >= 0 ? duties[idx + 1] : undefined
   const schedule = scheduleEvents ?? duties
+  // Next work of any kind (duty/reserve/standby) for 700.29 free-day deferral
+  const nextWork =
+    schedule
+      .filter((e) => isWorkEvent(e) && e.id !== duty.id)
+      .filter((e) => e.start.getTime() >= duty.end.getTime() - 500)
+      .sort((a, b) => a.start.getTime() - b.start.getTime())[0] ?? nextDuty
 
   let plan = computeTimeZoneRestPlan(
     duty,
@@ -565,7 +736,7 @@ export function buildRequiredRestForDuty(
   plan = applyDisruptiveScheduleToPlan(
     plan,
     duty,
-    next,
+    nextDuty,
     regulator,
     globalAcclTZ,
   )
@@ -575,7 +746,7 @@ export function buildRequiredRestForDuty(
     schedule,
     regulator,
     globalAcclTZ,
-    next,
+    nextWork,
   )
   plan = applyPositioningRestToPlan(
     plan,
@@ -859,6 +1030,9 @@ export function recomputeScheduleCompliance(
   }
 
   // Duties get rebuilt rests; preserve reserve/standby/free and non-managed rests.
+  const availabilities = restamped.filter(
+    (e) => e.type === 'reserve' || e.type === 'standby',
+  )
   const preserved = restamped.filter(
     (e) =>
       e.type === 'reserve' ||
@@ -886,13 +1060,25 @@ export function recomputeScheduleCompliance(
     )
   })
 
+  // Rest after reserve/standby with no call-out FDP (700.40 + optional 700.29 SDF)
+  const availRests = availabilities
+    .map((a) =>
+      buildRequiredRestAfterAvailability(
+        a,
+        scheduleFor70029,
+        regulator,
+        a.acclTZ || globalAcclTZ,
+      ),
+    )
+    .filter((r): r is DutyEvent => r != null)
+
   // Mid-FDP split-duty breaks (CAR 700.50) — rebuilt from duty.splitBreak
   const splitRests = duties
     .map((d) => buildSplitBreakRestEvent(d))
     .filter((r): r is DutyEvent => r != null)
 
   return recomputeLocalNightRests(
-    [...duties, ...rests, ...splitRests, ...preserved],
+    [...duties, ...rests, ...availRests, ...splitRests, ...preserved],
     regulator,
     globalAcclTZ,
   )

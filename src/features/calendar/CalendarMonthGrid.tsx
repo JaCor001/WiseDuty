@@ -1,4 +1,4 @@
-import type { CSSProperties, MouseEvent } from 'react'
+import { useCallback, useState, type CSSProperties, type MouseEvent } from 'react'
 import { CalendarDayCell } from '../../CalendarDayCell'
 import type {
   DayBarSpec,
@@ -21,8 +21,6 @@ export interface CalendarMonthGridProps {
   onDayPressStartMs: (dayStartMs: number) => void
   onDayPressEnd: () => void
   onBarClick: (bar: DayBarSpec, e: MouseEvent) => void
-  onBarPressStart: (bar: DayBarSpec) => void
-  onBarPressEnd: () => void
   onMarkerClick: (marker: DayMarkerSpec, e: MouseEvent) => void
   onViolationClick: (dayStartMs: number, e: MouseEvent) => void
 }
@@ -44,11 +42,18 @@ export default function CalendarMonthGrid({
   onDayPressStartMs,
   onDayPressEnd,
   onBarClick,
-  onBarPressStart,
-  onBarPressEnd,
   onMarkerClick,
   onViolationClick,
 }: CalendarMonthGridProps) {
+  /**
+   * Shared across all day cells so multi-day events light start/end stamps
+   * (and bar segments) on every cell that owns a piece of that event.
+   */
+  const [activeEventId, setActiveEventId] = useState<string | null>(null)
+  const onActiveEventChange = useCallback((eventId: string | null) => {
+    setActiveEventId(eventId)
+  }, [])
+
   return (
     <div className="calendar-container">
       <div
@@ -82,12 +87,12 @@ export default function CalendarMonthGrid({
               isSelected={isSelected}
               isToday={isToday}
               isInRange={isInRange(date)}
+              activeEventId={activeEventId}
+              onActiveEventChange={onActiveEventChange}
               onDayClick={onDayClickMs}
               onDayPressStart={onDayPressStartMs}
               onDayPressEnd={onDayPressEnd}
               onBarClick={onBarClick}
-              onBarPressStart={onBarPressStart}
-              onBarPressEnd={onBarPressEnd}
               onMarkerClick={onMarkerClick}
               onViolationClick={onViolationClick}
             />

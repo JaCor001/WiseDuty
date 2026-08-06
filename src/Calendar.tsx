@@ -11,7 +11,6 @@ import './Calendar.css'
 import './App.css'
 import type { DutyEvent, RestType } from './domain/types'
 import {
-  defaultWorkFactor,
   defaultWorkFactorForKind,
   eventKindToDutyType,
   inferEventKind,
@@ -26,6 +25,7 @@ import {
   findEditableEventOnDate,
   findEditableEventsOnDate,
   previewTenPlusTravelCompression,
+  removeDutyAndRelated,
   restIdForDuty,
   summarizeViolatedLnrs,
   type TenPlusTravelCompression,
@@ -34,6 +34,29 @@ import {
   applyScheduleMutation,
   type ScheduleContext,
 } from './domain/schedule-pipeline'
+import {
+  applyAvailabilityRemovals,
+  applyReserveStartAdjustments,
+  clearAvailabilityDependenciesForDuty,
+  markDutyViolated,
+  planPostDutyOverlapFix,
+} from './domain/schedule-overlap'
+import {
+  REDUCED_REST_10_TRAVEL_DETAILS,
+  REDUCED_REST_CONSENT_MESSAGE,
+} from './domain/rest-10-travel-copy'
+import {
+  evaluateFdpNearMaxLimit,
+  fdpLimitDialogTone,
+  shouldPromptFdpLimitDialog,
+  type FdpNearMaxResult,
+} from './domain/fdp-near-limit'
+import {
+  buildFdpExtensionPhasePrompt,
+  classifyFdpExtensionPhase,
+  DEFAULT_UOC_EXTENSION_CAP_H,
+} from './domain/uoc-extension'
+import FdpLimitGuideSheet from './features/calendar/FdpLimitGuideSheet'
 import {
   freeEventFromProposal,
   proposeFreeBlocks,
@@ -58,9 +81,15 @@ import {
   type DayBarSpec,
   type DayMarkerSpec,
 } from './domain/calendar-day-layout'
-import { buildPreferredHostMap } from './domain/marker-layout'
+import {
+  buildElnHostMap,
+  buildPreferredHostMap,
+  type ElnHostDutyInput,
+} from './domain/marker-layout'
 import {
   eventsOverlap,
+  fdpOperatingEnd,
+  getDutyMarkers,
   wouldExceedWeeklyLimit,
 } from './domain/regulations'
 import DutyForm, { type EventFormSubmitPayload } from './DutyForm'
@@ -125,6 +154,9 @@ function Calendar() {
   const [currentDate, setCurrentDate] = useState(() => new Date())
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [events, setEvents] = useState<DutyEvent[]>(() => loadEvents())
+  /** Latest schedule for sequential multi-clone (state alone lags between awaits). */
+  const eventsRef = useRef(events)
+  eventsRef.current = events
   const [freeProposals, setFreeProposals] = useState<FreeBlockProposal[]>([])
   const [showFreeProposals, setShowFreeProposals] = useState(false)
 
@@ -174,7 +206,6 @@ function Calendar() {
     () => loadDeletedEvents().length,
   )
   const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const barPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** Suppress the synthetic click that follows a successful long-press. */
   const suppressClickRef = useRef(false)
   /**
@@ -185,8 +216,6 @@ function Calendar() {
   const skipNextPersist = useRef(true)
   const [showMenu, setShowMenu] = useState(false)
   const [menuDate, setMenuDate] = useState<Date | null>(null)
-  /** Event targeted by long-press on a bar (edit/delete menu). */
-  const [actionEvent, setActionEvent] = useState<DutyEvent | null>(null)
   const [showAddDuty, setShowAddDuty] = useState(false)
   const [addDutyDate, setAddDutyDate] = useState<Date | null>(null)
   const [restType, setRestType] = useState<RestType>('12h')
@@ -199,6 +228,11 @@ function Calendar() {
   const [validationMessage, setValidationMessage] = useState('')
   const [tenPlusNotice, setTenPlusNotice] =
     useState<TenPlusTravelCompression | null>(null)
+  const [fdpLimitGuide, setFdpLimitGuide] = useState<{
+    mode: 'extension' | 'uoc'
+    duty: DutyEvent
+    assessment: FdpNearMaxResult
+  } | null>(null)
   const {
     dialog: appDialog,
     showAlert,
@@ -233,10 +267,27 @@ function Calendar() {
     saveEvents(events)
   }, [events])
 
+  // Rebuild managed rests (incl. post-reserve free-day structure) once after
+  // load so stored schedules pick up rule changes without re-editing each day.
+  useEffect(() => {
+    const result = applyScheduleMutation(
+      loadEvents(),
+      { type: 'recompute_only' },
+      {
+        regulator,
+        homeBaseTZ,
+        globalAcclTZ: acclTZ,
+        timeFreeOption,
+      },
+    )
+    setEvents(result.events)
+    // Intentional mount-only hydrate; settings are already loaded from storage.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     return () => {
       if (pressTimerRef.current) clearTimeout(pressTimerRef.current)
-      if (barPressTimerRef.current) clearTimeout(barPressTimerRef.current)
     }
   }, [])
 
@@ -340,6 +391,23 @@ function Calendar() {
       [...restIntervals, ...sdfIntervals],
       calendarTZ,
     )
+    // E/L/N host days: prefer natural day, move to roomier cell when crowded/thin
+    const elnDuties: ElnHostDutyInput[] = events
+      .filter((e) => e.type === 'duty')
+      .map((e) => {
+        const markers = getDutyMarkers(e, regulator, acclTZ, true, true).filter(
+          (m): m is 'E' | 'L' | 'N' => m === 'E' || m === 'L' || m === 'N',
+        )
+        return {
+          id: e.id,
+          start: e.start,
+          end: e.end,
+          operatingEnd: fdpOperatingEnd(e),
+          markers,
+        }
+      })
+      .filter((d) => d.markers.length > 0)
+    const elnHostMap = buildElnHostMap(elnDuties, calendarTZ, hostMap)
     const phantoms = buildPhantomSegments(events, regulator, acclTZ)
     return buildScheduleLayout(
       days,
@@ -352,6 +420,8 @@ function Calendar() {
       hostMap,
       phantoms,
       report70029.violations,
+      timeFormat,
+      elnHostMap,
     )
   }, [
     days,
@@ -360,6 +430,7 @@ function Calendar() {
     calendarTZ,
     regulator,
     acclTZ,
+    timeFormat,
     report70029.displaySdfs,
     report70029.violations,
   ])
@@ -390,8 +461,6 @@ function Calendar() {
 
   const handleDayPressStartMs = useCallback(
     (dayStartMs: number) => {
-      // Don't start day long-press while a bar long-press may be active
-      if (barPressTimerRef.current) return
       const d = dateByStartMs.get(dayStartMs)
       if (d) handleMouseDown(d)
     },
@@ -403,57 +472,9 @@ function Calendar() {
     handleMouseUp()
   }, [])
 
-  const openEventActionMenu = useCallback(
-    (event: DutyEvent) => {
-      const day = startOfDayInTimeZone(event.start, calendarTZ)
-      setInfoSheet(null)
-      setActionEvent(event)
-      selectDate(day)
-      setShowMenu(true)
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [calendarTZ],
-  )
-
-  const handleBarPressStart = useCallback(
-    (bar: DayBarSpec) => {
-      // Cancel any day long-press
-      if (pressTimerRef.current) {
-        clearTimeout(pressTimerRef.current)
-        pressTimerRef.current = null
-      }
-      if (bar.kind === 'phantom') return
-      const event = eventsById.get(bar.eventId)
-      if (!event) return
-      // Edit/delete only for user-editable work events
-      if (
-        event.type !== 'duty' &&
-        event.type !== 'reserve' &&
-        event.type !== 'standby'
-      ) {
-        return
-      }
-      if (barPressTimerRef.current) clearTimeout(barPressTimerRef.current)
-      barPressTimerRef.current = setTimeout(() => {
-        armLongPressGuard()
-        openEventActionMenu(event)
-        barPressTimerRef.current = null
-      }, 500)
-    },
-    [eventsById, openEventActionMenu],
-  )
-
-  const handleBarPressEnd = useCallback(() => {
-    if (barPressTimerRef.current) {
-      clearTimeout(barPressTimerRef.current)
-      barPressTimerRef.current = null
-    }
-  }, [])
-
   const handleBarClick = useCallback(
     (bar: DayBarSpec, e: ReactMouseEvent) => {
       e.stopPropagation()
-      // Long-press already opened edit/delete — ignore the trailing click
       if (consumeSuppressedClick()) return
       if (bar.kind === 'phantom' && bar.phantom) {
         const ph = bar.phantom
@@ -493,38 +514,12 @@ function Calendar() {
           },
           { kind: 'event', event },
         )
-      } else if (event.type === 'reserve' || event.type === 'standby') {
-        const kind = inferEventKind(event)
-        const factor = event.workFactor ?? defaultWorkFactor(event.type)
-        const kindTitle = titleForEventKind(kind)
+      } else {
+        // Duty, rest, reserve, standby — explainEvent adds 700.70 RDP when linked
         openInfoSheet(
-          {
-            badge: event.type === 'reserve' ? 'RSV' : 'SBY',
-            title: kindTitle,
-            rule:
-              event.type === 'reserve'
-                ? 'Time as a flight crew member on reserve (availability with notice of more than one hour) counts at 33% toward the maximum number of hours of work.'
-                : 'Time as a flight crew member on standby (at a designated location, notice of one hour or less) counts at 100% toward hours of work.',
-            reference: 'CAR 700.29(3); AC 700-047 §4.34',
-            whyApplies: `${kindTitle} from ${event.start.toLocaleString()} to ${event.end.toLocaleString()}. Work credit factor ${factor} (CAR 700.29(3)).`,
-            meta: [
-              `Start · ${event.start.toLocaleString()}`,
-              `End · ${event.end.toLocaleString()}`,
-              `Work factor · ${factor}`,
-              event.locationIcao
-                ? `Location · ${event.locationIcao}`
-                : undefined,
-            ].filter(Boolean) as string[],
-            canDelete: true,
-            eventId: event.id,
-          },
+          explainEvent(event, regulator, acclTZ, homeBaseTZ, events),
           { kind: 'event', event },
         )
-      } else {
-        openInfoSheet(explainEvent(event, regulator, acclTZ, homeBaseTZ), {
-          kind: 'event',
-          event,
-        })
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -549,12 +544,32 @@ function Calendar() {
       }
       const event = eventsById.get(marker.eventId)
       if (!event) return
-      if (marker.sheet === 'rest' || event.type === 'rest') {
-        openInfoSheet(explainEvent(event, regulator, acclTZ, homeBaseTZ), {
-          kind: 'event',
-          event,
-          marker: marker.type,
+
+      // ≈MAX: reopen interactive extension / UOC scheme
+      if (marker.type === 'NEAR' && event.type === 'duty') {
+        const assessment = evaluateFdpNearMaxLimit(event, {
+          regulator,
+          globalAcclTZ: event.acclTZ || acclTZ,
+          homeBaseTZ,
+          allEvents: events,
         })
+        setFdpLimitGuide({
+          mode: assessment.status === 'exceeded' ? 'uoc' : 'extension',
+          duty: event,
+          assessment,
+        })
+        return
+      }
+
+      if (marker.sheet === 'rest' || event.type === 'rest') {
+        openInfoSheet(
+          explainEvent(event, regulator, acclTZ, homeBaseTZ, events),
+          {
+            kind: 'event',
+            event,
+            marker: marker.type,
+          },
+        )
       } else {
         const explanation = explainMarker(
           marker.type,
@@ -661,7 +676,6 @@ function Calendar() {
     setSelectedDate(null)
     setMenuDate(null)
     setShowMenu(false)
-    setActionEvent(null)
   }
 
   /**
@@ -743,10 +757,6 @@ function Calendar() {
   }
 
   const resolveActionEvent = (): DutyEvent | null => {
-    if (actionEvent) {
-      // Prefer live copy from schedule (in case state is stale)
-      return events.find((e) => e.id === actionEvent.id) ?? actionEvent
-    }
     if (!selectedDate) return null
     return (
       findEditableEventOnDate(events, selectedDate) ??
@@ -774,7 +784,6 @@ function Calendar() {
     }
     setShowAddDuty(true)
     setShowMenu(false)
-    setActionEvent(null)
     setValidationMessage('')
   }
 
@@ -783,6 +792,28 @@ function Calendar() {
       const result = applyScheduleMutation(
         events,
         { type: 'delete_duty', dutyId: event.id },
+        scheduleCtx(),
+      )
+      // Restore reserve/standby starts that depended on this duty
+      const restored = clearAvailabilityDependenciesForDuty(
+        result.events,
+        event.id,
+      )
+      const next =
+        restored === result.events
+          ? result
+          : applyScheduleMutation(
+              restored,
+              { type: 'recompute_only' },
+              scheduleCtx(),
+            )
+      setEvents(next.events)
+    } else if (event.type === 'reserve' || event.type === 'standby') {
+      // Drop availability + its managed rest (`{id}-rest`), then recompute
+      const stripped = removeDutyAndRelated(events, event)
+      const result = applyScheduleMutation(
+        stripped,
+        { type: 'recompute_only' },
         scheduleCtx(),
       )
       setEvents(result.events)
@@ -890,14 +921,22 @@ function Calendar() {
 
   /**
    * Official mutation path:
-   * mutate → recomputeScheduleCompliance → 10+travel → evaluate70029 → setState/persist
+   * mutate → recomputeScheduleCompliance → 10+travel → evaluate70029
+   * → post-FDP overlap fix (reserve start / violation) → setState/persist
+   *
+   * Never auto-reduces rest below 12 h for reserve/standby clearance without
+   * explicit crew consent (Keep 12 h vs accept 10+travel).
    */
-  const saveDutyEvent = (
+  const saveDutyEvent = async (
     dutyEvent: DutyEvent,
     rt: RestType,
     baseEvents: DutyEvent[],
   ) => {
-    const result = applyScheduleMutation(
+    const ctx = {
+      ...scheduleCtx(),
+      globalAcclTZ: dutyEvent.acclTZ || acclTZ,
+    }
+    let result = applyScheduleMutation(
       baseEvents,
       {
         type: 'upsert_duty',
@@ -905,32 +944,241 @@ function Calendar() {
         restType: rt,
         applyTenPlusTravel: true,
       },
-      {
-        ...scheduleCtx(),
-        globalAcclTZ: dutyEvent.acclTZ || acclTZ,
-      },
+      ctx,
     )
-    setEvents(result.events)
-    const tenPlus = result.notices.find((n) => n.kind === 'ten_plus_travel')
-    if (tenPlus && tenPlus.kind === 'ten_plus_travel') {
-      queueMicrotask(() => {
-        setTenPlusNotice(tenPlus.compression)
-        void scheduleTravelRestReminders(tenPlus.compression.previousRelease, {
-          askUser: () =>
-            showConfirm(
-              '10+travel reminders',
-              'Notify you 30 minutes after the previous release to confirm hotel / rest location timing?',
-              { confirmLabel: 'Yes, remind me', cancelLabel: 'No thanks' },
-            ),
+    let eventsOut = result.events
+    let restTypeUsed: RestType = rt
+    const overlapNotes: string[] = []
+
+    // After rest is built: overlaps with next reserve/assignment.
+    // Default: protect 12 h after release when sliding reserve/standby starts.
+    const restAlreadyReduced = restTypeUsed === '10+travel'
+    let allowReducedRest = restAlreadyReduced
+    let plan = planPostDutyOverlapFix(eventsOut, dutyEvent.id, {
+      allowReducedRest,
+    })
+    if (plan.tryRestType10Travel && !allowReducedRest) {
+      const choice = await showChoice(
+        'Rest length',
+        REDUCED_REST_CONSENT_MESSAGE,
+        [
+          {
+            id: 'keep_12',
+            label: 'Keep 12 h rest',
+          },
+          {
+            id: 'accept_10',
+            label: 'Accept reduced rest (10 h + travel)',
+            detailLabel: 'Details',
+            detail: REDUCED_REST_10_TRAVEL_DETAILS,
+          },
+        ],
+      )
+      if (choice === 'accept_10') {
+        restTypeUsed = '10+travel'
+        allowReducedRest = true
+        result = applyScheduleMutation(
+          eventsOut,
+          {
+            type: 'upsert_duty',
+            duty: dutyEvent,
+            restType: '10+travel',
+            applyTenPlusTravel: true,
+          },
+          ctx,
+        )
+        eventsOut = result.events
+        plan = planPostDutyOverlapFix(eventsOut, dutyEvent.id, {
+          allowReducedRest: true,
         })
-      })
+      } else {
+        // Keep 12 h: slides/cancels still use a 12 h post-release floor
+        plan = planPostDutyOverlapFix(eventsOut, dutyEvent.id, {
+          allowReducedRest: false,
+        })
+      }
     }
-    const lnrMsg = summarizeViolatedLnrs(result.events)
-    if (lnrMsg) {
-      queueMicrotask(() => {
-        void showAlert('Rest requirement', lnrMsg)
-      })
+
+    if (plan.messages.length) {
+      for (const m of plan.messages) {
+        if (!overlapNotes.includes(m)) overlapNotes.push(m)
+      }
     }
+
+    const needApply =
+      plan.reserveAdjustments.length > 0 || plan.removePeerIds.length > 0
+    if (needApply) {
+      let adjusted = applyReserveStartAdjustments(
+        eventsOut,
+        plan.reserveAdjustments,
+      )
+      adjusted = applyAvailabilityRemovals(adjusted, plan.removePeerIds)
+      const after = applyScheduleMutation(
+        adjusted,
+        { type: 'recompute_only' },
+        ctx,
+      )
+      eventsOut = after.events
+      if (after.notices.length) {
+        result = { ...result, notices: [...result.notices, ...after.notices] }
+      }
+      // Re-check with same rest-protection policy after moves/removals
+      plan = planPostDutyOverlapFix(eventsOut, dutyEvent.id, {
+        allowReducedRest,
+      })
+      for (const m of plan.messages) {
+        if (
+          !overlapNotes.includes(m) &&
+          (/assignment|Contact|cancelled|Notify/i.test(m))
+        ) {
+          overlapNotes.push(m)
+        }
+      }
+      if (plan.removePeerIds.length > 0 || plan.reserveAdjustments.length > 0) {
+        adjusted = applyReserveStartAdjustments(
+          eventsOut,
+          plan.reserveAdjustments,
+        )
+        adjusted = applyAvailabilityRemovals(adjusted, plan.removePeerIds)
+        const after2 = applyScheduleMutation(
+          adjusted,
+          { type: 'recompute_only' },
+          ctx,
+        )
+        eventsOut = after2.events
+      }
+    }
+
+    if (plan.markDutyViolated) {
+      eventsOut = markDutyViolated(eventsOut, dutyEvent.id, true)
+    }
+
+    eventsRef.current = eventsOut
+    setEvents(eventsOut)
+
+    // Post-save dialogs must run in sequence (one AppDialog at a time).
+    // Priority: Max FDP/RDP choice → schedule notes → LNR → 10+travel notice.
+    // Fire-and-forget microtasks previously clobbered each other — especially
+    // common on reserve→FDP handoff when overlap notes also fire.
+    const tenPlus = result.notices.find((n) => n.kind === 'ten_plus_travel')
+    const lnrMsg = summarizeViolatedLnrs(eventsOut)
+    const savedDuty = eventsOut.find(
+      (e) => e.id === dutyEvent.id && e.type === 'duty',
+    )
+    const limitEval = savedDuty
+      ? evaluateFdpNearMaxLimit(savedDuty, {
+          regulator,
+          globalAcclTZ: savedDuty.acclTZ || acclTZ,
+          homeBaseTZ,
+          allEvents: eventsOut,
+        })
+      : evaluateFdpNearMaxLimit(dutyEvent, {
+          regulator,
+          globalAcclTZ: dutyEvent.acclTZ || acclTZ,
+          homeBaseTZ,
+          allEvents: eventsOut,
+        })
+    const dutyForGuide = savedDuty ?? dutyEvent
+
+    queueMicrotask(() => {
+      void (async () => {
+        // 1) Max FDP / RDP: within 1 h of max or exceeded — branch by
+        // wall-clock phase of the default +2 h UOC extension window.
+        // Chrome: amber (≤1 h, >30 min) or red (≤30 min / over).
+        if (shouldPromptFdpLimitDialog(limitEval)) {
+          const dialogTone = fdpLimitDialogTone(limitEval)
+          const extWindow = classifyFdpExtensionPhase(dutyForGuide, {
+            maxFdpHours: limitEval.maxFdpHours,
+            actualHours: limitEval.actualHours,
+            extensionCapHours: DEFAULT_UOC_EXTENSION_CAP_H,
+          })
+          const prompt = buildFdpExtensionPhasePrompt({
+            phase: extWindow.phase,
+            limitKind: limitEval.limitKind,
+            assessmentMessage: limitEval.message,
+            remainingLabel: limitEval.remainingLabel,
+            window: extWindow,
+          })
+
+          if (prompt.kind === 'choice') {
+            const choice = await showChoice(
+              prompt.title,
+              prompt.message,
+              prompt.choices,
+              { tone: dialogTone },
+            )
+            if (choice === 'guidelines' || choice === 'uoc') {
+              setFdpLimitGuide({
+                mode:
+                  limitEval.status === 'exceeded' ? 'uoc' : 'extension',
+                duty: dutyForGuide,
+                assessment: limitEval,
+              })
+            } else if (choice === 'refuse') {
+              await showAlert(
+                'Contact your company',
+                'You indicated you are not willing to extend. Contact your company so the assignment can be re-planned.',
+                { confirmLabel: 'Got it', tone: dialogTone },
+              )
+            }
+          } else {
+            await showAlert(prompt.title, prompt.message, {
+              confirmLabel: 'Got it',
+              tone: dialogTone,
+            })
+            // Active/ended: offer guidelines after the advisory
+            if (extWindow.phase === 'active' || extWindow.phase === 'ended') {
+              const review = await showConfirm(
+                'Review UOC guidelines?',
+                'Open the CAR 700.63 decision scheme (timing, crew consent, PIC, crew configuration)?',
+                {
+                  confirmLabel: 'Review guidelines',
+                  cancelLabel: 'Not now',
+                  tone: dialogTone,
+                },
+              )
+              if (review) {
+                setFdpLimitGuide({
+                  mode:
+                    limitEval.status === 'exceeded' ||
+                    extWindow.phase === 'active' ||
+                    extWindow.phase === 'ended'
+                      ? 'uoc'
+                      : 'extension',
+                  duty: dutyForGuide,
+                  assessment: limitEval,
+                })
+              }
+            }
+          }
+        }
+
+        // 2) Schedule notes (reserve slides, assignment conflicts, …)
+        if (overlapNotes.length > 0) {
+          await showAlert('Schedule note', overlapNotes.join(' '), {
+            confirmLabel: 'Got it',
+          })
+        }
+
+        // 3) Local night rest
+        if (lnrMsg) {
+          await showAlert('Rest requirement', lnrMsg)
+        }
+
+        // 4) 10+travel notice + optional reminder scheduling
+        if (tenPlus && tenPlus.kind === 'ten_plus_travel') {
+          setTenPlusNotice(tenPlus.compression)
+          void scheduleTravelRestReminders(tenPlus.compression.previousRelease, {
+            askUser: () =>
+              showConfirm(
+                '10+travel reminders',
+                'Notify you 30 minutes after the previous release to confirm hotel / rest location timing?',
+                { confirmLabel: 'Yes, remind me', cancelLabel: 'No thanks' },
+              ),
+          })
+        }
+      })()
+    })
   }
 
   const acknowledgeTenPlusNotice = () => {
@@ -997,6 +1245,8 @@ function Calendar() {
     const forceNew = opts.forceNew === true
     const closeOnSuccess = opts.closeOnSuccess !== false
     const treatingAsEdit = !forceNew && isEdit && !!editEvent
+    // Snapshot schedule (ref stays current across sequential multi-clone awaits)
+    const schedule = eventsRef.current
 
     setValidationMessage('')
     const { duty: partial, restType: rt, eventKind, prefixReserve } = payload
@@ -1011,10 +1261,10 @@ function Calendar() {
     // Clone never excludes the original (it is a new event).
     const excludeId = treatingAsEdit ? editEvent?.id : undefined
     if (
-      wouldExceedWeeklyLimit(events, start, end, excludeId) ||
+      wouldExceedWeeklyLimit(schedule, start, end, excludeId) ||
       (prefixReserve &&
         wouldExceedWeeklyLimit(
-          events,
+          schedule,
           prefixReserve.start,
           prefixReserve.end,
           excludeId,
@@ -1026,9 +1276,10 @@ function Calendar() {
       return false
     }
 
-    // Non-duty types: reserve / standby — no rest recompute from duty engine
-    // (Manual free time is not an event type; use Suggest Free Time for SDF blocks.)
+    // Reserve / standby: rebuild post-availability rest (700.40 + optional 700.29 free day)
+    // (Manual free time is not an event type; use Suggest Free Time for free blocks.)
     if (dutyType === 'reserve' || dutyType === 'standby') {
+      // Manual schedule: floor = this start; drop auto-dependency from prior FDP
       const aux: DutyEvent = {
         id:
           treatingAsEdit && editEvent
@@ -1044,11 +1295,13 @@ function Calendar() {
         startTZ: partial.startTZ,
         endTZ: partial.endTZ,
         workFactor: defaultWorkFactorForKind(eventKind),
+        scheduledStart: start,
+        startDependsOnDutyId: undefined,
       }
       if (treatingAsEdit && editEvent && editEvent.type === 'duty') {
         // Convert duty → reserve/standby: delete duty via pipeline then append aux
         const afterDelete = applyScheduleMutation(
-          events,
+          schedule,
           { type: 'delete_duty', dutyId: editEvent.id },
           scheduleCtx(),
         )
@@ -1057,17 +1310,19 @@ function Calendar() {
           { type: 'recompute_only' },
           scheduleCtx(),
         )
+        eventsRef.current = next.events
         setEvents(next.events)
       } else {
         const without =
           treatingAsEdit && editEvent
-            ? events.filter((e) => e.id !== editEvent.id)
-            : events
+            ? schedule.filter((e) => e.id !== editEvent.id)
+            : schedule
         const next = applyScheduleMutation(
           [...without, aux],
           { type: 'recompute_only' },
           scheduleCtx(),
         )
+        eventsRef.current = next.events
         setEvents(next.events)
       }
       if (closeOnSuccess) resetDutyForm()
@@ -1104,6 +1359,14 @@ function Calendar() {
       reportOverridden: partial.reportOverridden,
       releaseOverridden: partial.releaseOverridden,
       splitBreak: partial.splitBreak,
+      // CAR 700.70: RAP start for RDP (not call/end time). Prefer form value;
+      // fall back to prefix reserve start on handoff.
+      rapStart:
+        partial.rapStart ??
+        (prefixReserve &&
+        eventKindToDutyType(prefixReserve.eventKind) === 'reserve'
+          ? prefixReserve.start
+          : undefined),
       workFactor: defaultWorkFactorForKind(eventKind),
       violated,
     })
@@ -1112,7 +1375,7 @@ function Calendar() {
     const previewDuty = buildDuty(
       treatingAsEdit && editEvent ? editEvent.id : 'preview-duty',
     )
-    const baseDuties = events.filter(
+    const baseDuties = schedule.filter(
       (e) =>
         e.type === 'duty' &&
         !(treatingAsEdit && editEvent && e.id === editEvent.id),
@@ -1134,8 +1397,71 @@ function Calendar() {
     // The function filters duties for some checks; still run with duty list for hours
     if (!run70029Preview([...baseDuties, previewDuty], dutyAccl)) return false
 
+    // Prefix reserve/standby then FDP (add or edit existing reserve → handoff)
+    // Must run before plain edit: editEvent may be the reserve being updated.
+    if (prefixReserve) {
+      const editingReserve =
+        treatingAsEdit &&
+        !!editEvent &&
+        (editEvent.type === 'reserve' || editEvent.type === 'standby')
+
+      const baseSchedule = editingReserve
+        ? schedule.filter(
+            (e) =>
+              e.id !== editEvent!.id && e.id !== restIdForDuty(editEvent!.id),
+          )
+        : schedule
+
+      const rsv: DutyEvent = {
+        id: editingReserve
+          ? editEvent!.id
+          : createId(`-${eventKindToDutyType(prefixReserve.eventKind)}`),
+        title: titleForEventKind(prefixReserve.eventKind),
+        type: eventKindToDutyType(prefixReserve.eventKind),
+        eventKind: prefixReserve.eventKind,
+        locationIcao: prefixReserve.locationIcao,
+        start: prefixReserve.start,
+        end: prefixReserve.end,
+        acclTZ: dutyAccl,
+        workFactor: defaultWorkFactorForKind(prefixReserve.eventKind),
+      }
+      const dutyId = createId()
+      const candidate = buildDuty(dutyId)
+      void prefixPreview
+      const overlap = await resolveRestOverlapForDuty(
+        candidate,
+        baseSchedule,
+        rt,
+        dutyAccl,
+      )
+      if (overlap.abort) return false
+      if (rt === '10+travel') {
+        const result = await scheduleTravelRestReminders(end, {
+          askUser: () =>
+            showConfirm(
+              '10+travel reminders',
+              'Notify you 30 minutes after release to confirm hotel / rest location timing?',
+              { confirmLabel: 'Yes, remind me', cancelLabel: 'No thanks' },
+            ),
+        })
+        if (!result.ok) {
+          setValidationMessage(
+            (result.hoursSinceRelease ?? 0) > 15
+              ? 'More than 15 hours have passed since the original release time. Please update the release time.'
+              : 'The original release time has already passed. Please modify the release time.',
+          )
+          return false
+        }
+      }
+      const newDuty = buildDuty(dutyId, overlap.markViolated)
+      // Persist updated/created reserve + new FDP through compliance pipeline
+      await saveDutyEvent(newDuty, rt, [...baseSchedule, rsv, newDuty])
+      if (closeOnSuccess) resetDutyForm()
+      return true
+    }
+
     if (treatingAsEdit && editEvent) {
-      const without = events.filter(
+      const without = schedule.filter(
         (e) => e.id !== editEvent.id && e.id !== restIdForDuty(editEvent.id),
       )
       const candidate = buildDuty(editEvent.id)
@@ -1167,58 +1493,8 @@ function Calendar() {
       }
       const updatedDuty = buildDuty(editEvent.id, overlap.markViolated)
       if (updatedDuty.type === 'duty') {
-        saveDutyEvent(updatedDuty, rt, [...without, updatedDuty])
+        await saveDutyEvent(updatedDuty, rt, [...without, updatedDuty])
       }
-      if (closeOnSuccess) resetDutyForm()
-      return true
-    }
-
-    // Prefix reserve/standby then FDP
-    if (prefixReserve) {
-      const rsv: DutyEvent = {
-        id: createId(
-          `-${eventKindToDutyType(prefixReserve.eventKind)}`,
-        ),
-        title: titleForEventKind(prefixReserve.eventKind),
-        type: eventKindToDutyType(prefixReserve.eventKind),
-        eventKind: prefixReserve.eventKind,
-        locationIcao: prefixReserve.locationIcao,
-        start: prefixReserve.start,
-        end: prefixReserve.end,
-        acclTZ: dutyAccl,
-        workFactor: defaultWorkFactorForKind(prefixReserve.eventKind),
-      }
-      const dutyId = createId()
-      const candidate = buildDuty(dutyId)
-      // Keep unused var lint-free: prefixPreview was for future weekly checks
-      void prefixPreview
-      const overlap = await resolveRestOverlapForDuty(
-        candidate,
-        events,
-        rt,
-        dutyAccl,
-      )
-      if (overlap.abort) return false
-      if (rt === '10+travel') {
-        const result = await scheduleTravelRestReminders(end, {
-          askUser: () =>
-            showConfirm(
-              '10+travel reminders',
-              'Notify you 30 minutes after release to confirm hotel / rest location timing?',
-              { confirmLabel: 'Yes, remind me', cancelLabel: 'No thanks' },
-            ),
-        })
-        if (!result.ok) {
-          setValidationMessage(
-            (result.hoursSinceRelease ?? 0) > 15
-              ? 'More than 15 hours have passed since the original release time. Please update the release time.'
-              : 'The original release time has already passed. Please modify the release time.',
-          )
-          return false
-        }
-      }
-      const newDuty = buildDuty(dutyId, overlap.markViolated)
-      saveDutyEvent(newDuty, rt, [...events, rsv, newDuty])
       if (closeOnSuccess) resetDutyForm()
       return true
     }
@@ -1227,7 +1503,7 @@ function Calendar() {
     const candidate = buildDuty(dutyId)
     const overlap = await resolveRestOverlapForDuty(
       candidate,
-      events,
+      schedule,
       rt,
       dutyAccl,
     )
@@ -1253,7 +1529,7 @@ function Calendar() {
     }
 
     const newEvent = buildDuty(dutyId, overlap.markViolated)
-    saveDutyEvent(newEvent, rt, [...events, newEvent])
+    await saveDutyEvent(newEvent, rt, [...schedule, newEvent])
 
     if (closeOnSuccess) resetDutyForm()
     return true
@@ -1393,8 +1669,6 @@ function Calendar() {
             onDayPressStartMs={handleDayPressStartMs}
             onDayPressEnd={handleDayPressEnd}
             onBarClick={handleBarClick}
-            onBarPressStart={handleBarPressStart}
-            onBarPressEnd={handleBarPressEnd}
             onMarkerClick={handleMarkerClick}
             onViolationClick={handleViolationClick}
           />
@@ -1440,18 +1714,10 @@ function Calendar() {
                 className="modal-content day-menu-modal"
                 onClick={(e) => e.stopPropagation()}
                 role="dialog"
-                aria-label={
-                  actionEvent
-                    ? `Actions for ${actionEvent.title}`
-                    : `Options for ${menuDate.toDateString()}`
-                }
+                aria-label={`Options for ${menuDate.toDateString()}`}
               >
                 <div className="day-details-header">
-                  <h3>
-                    {actionEvent
-                      ? actionEvent.title || 'Event'
-                      : menuDate.toDateString()}
-                  </h3>
+                  <h3>{menuDate.toDateString()}</h3>
                   <button
                     type="button"
                     className="day-details-close"
@@ -1461,50 +1727,21 @@ function Calendar() {
                     <IconClose size={18} />
                   </button>
                 </div>
-                {actionEvent && (
-                  <p className="day-details-events">
-                    <span className="day-details-events-label">
-                      {actionEvent.start.toLocaleString()} →{' '}
-                      {actionEvent.end.toLocaleString()}
-                    </span>
-                  </p>
-                )}
                 <div className="day-details-actions">
-                  {actionEvent ? (
-                    <>
-                      <button
-                        type="button"
-                        className="day-details-btn day-details-btn-primary"
-                        onClick={handleEditDuty}
-                      >
-                        Edit Event
-                      </button>
-                      <button
-                        type="button"
-                        className="day-details-btn day-details-btn-danger"
-                        onClick={handleDeleteDuty}
-                      >
-                        Delete Event
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        className="day-details-btn day-details-btn-primary"
-                        onClick={handleAddDuty}
-                      >
-                        Add Event
-                      </button>
-                      <button
-                        type="button"
-                        className="day-details-btn day-details-btn-secondary"
-                        onClick={openFreeSuggestions}
-                      >
-                        Suggest Free Time
-                      </button>
-                    </>
-                  )}
+                  <button
+                    type="button"
+                    className="day-details-btn day-details-btn-primary"
+                    onClick={handleAddDuty}
+                  >
+                    Add Event
+                  </button>
+                  <button
+                    type="button"
+                    className="day-details-btn day-details-btn-secondary"
+                    onClick={openFreeSuggestions}
+                  >
+                    Suggest Free Time
+                  </button>
                 </div>
               </div>
             </div>
@@ -1527,7 +1764,12 @@ function Calendar() {
                 homeBaseTZ={homeBaseTZ}
                 buffers={dutyTimingBuffers}
                 editEvent={isEdit ? editEvent : null}
-                priorDuties={events.filter((e) => e.type === 'duty')}
+                priorDuties={events.filter(
+                  (e) =>
+                    e.type === 'duty' ||
+                    e.type === 'reserve' ||
+                    e.type === 'standby',
+                )}
                 restType={restType}
                 onRestTypeChange={setRestType}
                 validationMessage={validationMessage}
@@ -1605,6 +1847,15 @@ function Calendar() {
           )}
         </div>
       </div>
+      {fdpLimitGuide && (
+        <FdpLimitGuideSheet
+          mode={fdpLimitGuide.mode}
+          duty={fdpLimitGuide.duty}
+          assessment={fdpLimitGuide.assessment}
+          onClose={() => setFdpLimitGuide(null)}
+        />
+      )}
+
       {tenPlusNotice && (
         <div
           className="info-sheet-overlay"
@@ -1893,6 +2144,7 @@ function Calendar() {
           danger={
             appDialog.kind === 'confirm' ? !!appDialog.danger : false
           }
+          tone={appDialog.tone}
           confirmLabel={
             appDialog.kind === 'alert' || appDialog.kind === 'confirm'
               ? appDialog.confirmLabel

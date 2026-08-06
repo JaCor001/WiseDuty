@@ -16,7 +16,14 @@ import {
 } from './regulations'
 import { earliestLocalNightsRestEnd } from './rest-70042'
 import { splitBreakOverlapHours } from './rest-70050'
-import { getZonedTimeParts, zonedWallTimeOnDay } from './time'
+import {
+  addCivilDaysInTimeZone,
+  getHourInTZ,
+  getMinutesInTZ,
+  getZonedTimeParts,
+  startOfDayInTimeZone,
+  zonedWallTimeOnDay,
+} from './time'
 
 /** Typical post-duty clock rest used to probe “could another FDP fit?” */
 const HYP_CLOCK_REST_H = 12
@@ -185,10 +192,16 @@ export function workEventsSorted(events: DutyEvent[]): DutyEvent[] {
     .sort((a, b) => a.start.getTime() - b.start.getTime())
 }
 
+/** Open free after last work for LNR/SDF foresight (two nights + slack). */
+const TRAILING_FREE_PLAN_MS = 10 * 24 * H
+/** Do not invent trailing free after work older than this vs "now". */
+const TRAILING_FREE_MAX_AGE_MS = 30 * 24 * H
+
 /**
  * Free intervals: gaps between work events + explicit `free` events (merged).
- * Also includes completed free time after the last work event through "now"
- * (so a free weekend after the latest FDP can form LNRs/SDFs).
+ * Also includes open free time after the last work event so a free weekend
+ * after a RAP/duty block can form LNRs/SDFs for awareness (even when nothing
+ * is scheduled next, and even when that block is still in the near future).
  */
 export function buildFreeIntervals(
   events: DutyEvent[],
@@ -209,18 +222,26 @@ export function buildFreeIntervals(
     })
   }
 
-  // Trailing free after last work: only if the last work is recent (within 30 days
-  // of "now"), so historical pairings do not invent weeks of free time after the
-  // last sector of an old trip.
+  // Trailing free after last work (recent or upcoming only — not ancient history).
   if (work.length > 0) {
     const last = work[work.length - 1]
-    const ageMs = now.getTime() - last.end.getTime()
-    if (ageMs > 0 && ageMs <= 30 * 24 * H) {
-      intervals.push({
-        start: last.end,
-        end: now,
-        acclTZ: eventAccl(last, globalAcclTZ),
-      })
+    const lastEnd = last.end.getTime()
+    const nowMs = now.getTime()
+    // last work not older than 30 d (future last work always qualifies)
+    if (lastEnd >= nowMs - TRAILING_FREE_MAX_AGE_MS) {
+      // At least ~10 d after release so two local nights can complete; extend
+      // through "now" when the pilot is already living in that free stretch.
+      const endMs = Math.min(
+        Math.max(nowMs, lastEnd + TRAILING_FREE_PLAN_MS),
+        lastEnd + TRAILING_FREE_MAX_AGE_MS,
+      )
+      if (endMs > lastEnd) {
+        intervals.push({
+          start: last.end,
+          end: new Date(endMs),
+          acclTZ: eventAccl(last, globalAcclTZ),
+        })
+      }
     }
   }
 
@@ -271,16 +292,80 @@ export function workActivitySpanHours(
 }
 
 /**
+ * How many consecutive local calendar days ending on `asOf`'s civil day each
+ * contain work (duty / reserve / standby). A free calendar day breaks the run.
+ *
+ * Used so five straight RAP/duty days require free-day structure even when
+ * weighted hours or hypothetical next-day RAP timing would otherwise defer it.
+ */
+export function countConsecutiveWorkCalendarDays(
+  events: DutyEvent[],
+  asOf: Date,
+  acclTZ: string,
+): number {
+  const workDays = new Set<string>()
+  for (const e of events) {
+    if (!isWorkEvent(e)) continue
+    if (e.end.getTime() <= e.start.getTime()) continue
+    // Ignore work that starts after the anchor release
+    if (e.start.getTime() >= asOf.getTime() + 500) continue
+    let day = startOfDayInTimeZone(e.start, acclTZ)
+    const endBound = Math.min(e.end.getTime(), asOf.getTime() + 500)
+    for (let n = 0; n < 60; n++) {
+      const next = addCivilDaysInTimeZone(day, acclTZ, 1)
+      const dayStart = day.getTime()
+      const dayEnd = next.getTime()
+      // Overlap of [start, end) with [dayStart, dayEnd)
+      const o0 = Math.max(e.start.getTime(), dayStart)
+      const o1 = Math.min(e.end.getTime(), dayEnd)
+      if (o1 > o0 && o0 < asOf.getTime() + 500) {
+        workDays.add(getZonedTimeParts(day, acclTZ).dayKey)
+      }
+      if (dayEnd >= endBound && dayStart >= endBound) break
+      if (dayStart >= endBound) break
+      day = next
+    }
+  }
+
+  let cursor = startOfDayInTimeZone(asOf, acclTZ)
+  let count = 0
+  for (let n = 0; n < 40; n++) {
+    const key = getZonedTimeParts(cursor, acclTZ).dayKey
+    if (!workDays.has(key)) break
+    count++
+    cursor = addCivilDaysInTimeZone(cursor, acclTZ, -1)
+  }
+  return count
+}
+
+/** Minimum consecutive local work days that force free-day structure in scope. */
+export const CONSECUTIVE_WORK_DAYS_FOR_SDF = 5
+
+/**
  * Whether work intensity is high enough that SDF structure is in scope for a
  * 168 h lookback (not necessarily flag yet — see canStillCompleteSdfBeforeDeadline).
  *
- * Gate: meaningful work (≥24 h) and activity spanning ≥4 days, or ≥40 h work.
+ * Gate (weighted hours of work, 700.29(3)):
+ * - ≥5 consecutive local calendar days with work → in scope (any positive work)
+ * - ≥40 h work → always in scope
+ * - ≥12 h work and activity spanning ≥4 days (≥96 h) → in scope
+ *   (covers five 8–12 h home RAPs over a work week; reserve is 33%)
+ *
+ * Floor 12 h (not 24) so reserve-heavy weeks are not invisible to free-day
+ * structure while sparse single pairings stay quiet.
  */
 export function shouldRequireSdfIn168(
   workHours: number,
   activitySpanHours: number,
+  consecutiveWorkDays = 0,
 ): boolean {
-  if (workHours < 24 - 1e-9) return false
+  if (
+    consecutiveWorkDays >= CONSECUTIVE_WORK_DAYS_FOR_SDF &&
+    workHours > 1e-9
+  ) {
+    return true
+  }
+  if (workHours < 12 - 1e-9) return false
   if (workHours >= 40 - 1e-9) return true
   return activitySpanHours >= 96 - 1e-9
 }
@@ -385,17 +470,56 @@ export function earliestHypotheticalNextFdp(
 }
 
 /**
+ * After unused reserve/standby, the next plausible work day is another RAP/stby
+ * at the same local start hour and duration (not a short hypothetical FDP).
+ * Using a short FDP under-states free-day pressure after a 5-day RAP week.
+ */
+export function earliestHypotheticalNextAvailability(
+  lastAvail: DutyEvent,
+  acclTZ: string,
+): { start: Date; end: Date } {
+  const tz = lastAvail.acclTZ || acclTZ
+  const startH = getHourInTZ(lastAvail.start, tz)
+  const startM = getMinutesInTZ(lastAvail.start, tz) % 60
+  const durMs = Math.max(
+    H,
+    lastAvail.end.getTime() - lastAvail.start.getTime(),
+  )
+  // Next calendar day at the same wall-clock start (skip if still before end)
+  for (let dayOffset = 1; dayOffset <= 3; dayOffset++) {
+    const start = zonedWallTimeOnDay(lastAvail.end, tz, startH, startM, dayOffset)
+    if (start.getTime() + 500 < lastAvail.end.getTime()) continue
+    return { start, end: new Date(start.getTime() + durMs) }
+  }
+  const start = zonedWallTimeOnDay(lastAvail.end, tz, startH, startM, 1)
+  return { start, end: new Date(start.getTime() + durMs) }
+}
+
+/** Hypothetical next work after this event (FDP vs another RAP/stby). */
+export function earliestHypotheticalNextWork(
+  lastWork: DutyEvent,
+  acclTZ: string,
+): { start: Date; end: Date } {
+  if (lastWork.type === 'reserve' || lastWork.type === 'standby') {
+    return earliestHypotheticalNextAvailability(lastWork, acclTZ)
+  }
+  return earliestHypotheticalNextFdp(lastWork.end, acclTZ)
+}
+
+/**
  * Free day is **absolutely required** when continuing without one is no longer
  * legal — same spirit as required rest bars (shown even if no next duty is
  * scheduled yet).
  *
- * Required when free day cannot wait until after the next FDP (scheduled, or a
- * hypothetical next-morning duty if none is scheduled). That includes a long
- * gap before a later duty: free day must still sit in that gap (and the rest
- * bar marks it) so duty cannot be placed inside the free-day window.
+ * Required when:
+ * - free day cannot wait until after the next work period (scheduled, or a
+ *   hypothetical next day — FDP after duty, or another RAP/stby after unused
+ *   availability), or
+ * - the pilot has already worked ≥5 consecutive local calendar days ending at
+ *   this release (a full work week of RAP/duty without a free day).
  *
- * Not required when free day can still complete *after* that next FDP (another
- * consecutive day can still be flown first under 60 h).
+ * Not required when free day can still complete *after* that next work period
+ * **and** the consecutive-day streak is still under 5.
  */
 export function isSdfAbsolutelyRequired(opts: {
   dutyEnd: Date
@@ -403,6 +527,8 @@ export function isSdfAbsolutelyRequired(opts: {
   nextDutyEnd?: Date | null
   scheduleEvents: DutyEvent[]
   acclTZ: string
+  /** Last work event — shapes the hypothetical next RAP/stby/FDP when none scheduled. */
+  lastWorkEvent?: DutyEvent | null
 }): boolean {
   const { dutyEnd, acclTZ, scheduleEvents } = opts
   const w0 = new Date(dutyEnd.getTime() - MS_168H)
@@ -414,22 +540,36 @@ export function isSdfAbsolutelyRequired(opts: {
     return true
   }
 
-  // Probe next: scheduled next duty, or earliest plausible FDP if none yet
+  // Five straight local work days without a free calendar day — free day is due
+  // now. Do not defer on a hypothetical next RAP that only barely still fits
+  // (late-start RAPs e.g. 08:00–20:00 used to slip past the hyp probe).
+  const consecutive = countConsecutiveWorkCalendarDays(
+    scheduleEvents,
+    dutyEnd,
+    acclTZ,
+  )
+  if (consecutive >= CONSECUTIVE_WORK_DAYS_FOR_SDF) {
+    return true
+  }
+
+  // Probe next: scheduled next work, or hypothetical next day of the same kind
   const realNextStart = opts.nextDutyStart
   const realNextEnd = opts.nextDutyEnd
   const probe =
     realNextStart && realNextEnd
       ? { start: realNextStart, end: realNextEnd }
-      : earliestHypotheticalNextFdp(dutyEnd, acclTZ)
+      : opts.lastWorkEvent
+        ? earliestHypotheticalNextWork(opts.lastWorkEvent, acclTZ)
+        : earliestHypotheticalNextFdp(dutyEnd, acclTZ)
 
-  // Free day can still finish after that next FDP → defer (mid-pairing OK)
+  // Free day can still finish after that next work period → defer
   const w0n = new Date(probe.end.getTime() - MS_168H)
   const firstN = firstWorkStartInWindow(scheduleEvents, w0n, probe.end) ?? first
   if (canStillCompleteSdfBeforeDeadline(probe.end, firstN, acclTZ)) {
     return false
   }
 
-  // Next duty (real or hypothetical) leaves no room for free day afterward →
+  // Next work (real or hypothetical) leaves no room for free day afterward →
   // free day is required after this release (in the gap, or as blocked rest).
   return true
 }
@@ -665,6 +805,31 @@ export function countSdfsInWindow(
   ).length
 }
 
+/**
+ * SDFs fully inside the window that begin at/after work activity has started
+ * in that window.
+ *
+ * Free days parked only in the leading free gap (before the first work event
+ * of the lookback) do **not** cover free-day structure for the work that
+ * follows — e.g. weekend free before a Mon–Fri RAP block is outside the
+ * problem period even if the raw 168 h lookback from Friday still contains it.
+ */
+export function countSdfsAfterWorkStartedInWindow(
+  sdfs: SingleDayFree[],
+  events: DutyEvent[],
+  windowStart: Date,
+  windowEnd: Date,
+): number {
+  const first = firstWorkStartInWindow(events, windowStart, windowEnd)
+  if (!first) return 0
+  const firstMs = first.getTime()
+  return sdfs.filter((s) => {
+    if (s.start.getTime() < windowStart.getTime()) return false
+    if (s.end.getTime() > windowEnd.getTime()) return false
+    return s.start.getTime() >= firstMs - 500
+  }).length
+}
+
 function sdfKey(s: SingleDayFree): string {
   return `${s.start.getTime()}|${s.end.getTime()}|${s.acclTZ}`
 }
@@ -682,6 +847,18 @@ function sdfFullyInWindow(
 
 export type DisplaySdfReason =
   | 'load_bearing'
+  /**
+   * Completed free day fully inside a 168 h lookback that also contains hours of
+   * work — shown for awareness so the pilot can see 700.29 free-day coverage
+   * is already satisfied in that window (not only when the SDF is load-bearing).
+   */
+  | 'covers_work'
+  /**
+   * Earliest completed free day in the open free gap right after a duty /
+   * reserve / standby (before the next work). Awareness when structure is not
+   * yet mandatory — e.g. four RAP days then a free weekend still shows SDF.
+   */
+  | 'post_work_free'
   | 'required_before_next'
   /** Planned free-day slot after last work — not yet achieved free time. */
   | 'prospective'
@@ -722,10 +899,17 @@ export function earliestPossibleSdfAfter(
  *
  * 1. **load_bearing** — without this SDF, a 168 h / 672 h window that already
  *    needs free-time structure would fail (removing it would cause a violation).
- * 2. **required_before_next** — after the latest work, work intensity already
+ * 2. **covers_work** — completed free day fully inside any 168 h lookback that
+ *    also has hours of work (duty / reserve / standby). Awareness chip so the
+ *    pilot can see free-day coverage is already present for that work period
+ *    (e.g. free weekend before a RAP block still covers the rolling window).
+ * 3. **post_work_free** — earliest completed free day in the free gap immediately
+ *    after a duty/reserve/standby (before the next work). Shows even when free
+ *    day is not yet mandatory (e.g. four RAP days, nothing on day 5–6 → SDF).
+ * 4. **required_before_next** — after the latest work, work intensity already
  *    warrants an SDF before further duty; show the earliest trailing / in-window
  *    completed SDF (not every free night pair for weeks).
- * 3. **prospective** — same situation, but no completed free day covers the
+ * 5. **prospective** — same situation, but no completed free day covers the
  *    current window yet; show where the next two local nights should fall so the
  *    pilot sees the requirement *before* adding another FDP that closes the window.
  */
@@ -785,8 +969,35 @@ export function selectDisplaySdfs(
     if (loadBearing) add(sdf, 'load_bearing')
   }
 
-  // --- (2) Free day only when absolutely required (after last work) ---
+  // --- (1b) Awareness: free day fully inside a work-containing 168 h window ---
+  // Show even when another free day also covers the window (not only load-bearing),
+  // so the pilot can see that 700.29 free-day structure is already met.
+  for (const sdf of sdfs) {
+    for (const t of workEnds) {
+      const w168Start = new Date(t.getTime() - MS_168H)
+      if (!sdfFullyInWindow(sdf, w168Start, t)) continue
+      const workH = getWorkHoursInWindow(events, w168Start, t)
+      if (workH <= 1e-9) continue
+      add(sdf, 'covers_work')
+      break
+    }
+  }
+
+  // --- (1c) Awareness: earliest completed free day right after each work period ---
+  // 4 RAPs then open calendar → free day on day 5–6 is real and should show even
+  // though free-day rest is not yet mandatory.
   const work = workEventsSorted(events)
+  for (let i = 0; i < work.length; i++) {
+    const w = work[i]
+    const nextStart = work[i + 1]?.start.getTime() ?? Number.POSITIVE_INFINITY
+    const trailing = sdfs
+      .filter((s) => s.start.getTime() >= w.end.getTime() - 60_000)
+      .filter((s) => s.start.getTime() < nextStart)
+      .sort((a, b) => a.start.getTime() - b.start.getTime())
+    if (trailing[0]) add(trailing[0], 'post_work_free')
+  }
+
+  // --- (2) Free day only when absolutely required (after last work) ---
   if (work.length > 0) {
     const last = work[work.length - 1]
     const nextWork = work.find((w) => w.start.getTime() > last.end.getTime())
@@ -794,17 +1005,35 @@ export function selectDisplaySdfs(
     const w168Start = new Date(last.end.getTime() - MS_168H)
     const work168 = getWorkHoursInWindow(events, w168Start, last.end)
     const span168 = workActivitySpanHours(events, w168Start, last.end)
-    const covering = countSdfsInWindow(sdfs, w168Start, last.end)
+    const coveringAfterWork = countSdfsAfterWorkStartedInWindow(
+      sdfs,
+      events,
+      w168Start,
+      last.end,
+    )
+    const consecutiveDays = countConsecutiveWorkCalendarDays(
+      events,
+      last.end,
+      accl,
+    )
+
+    // Free days only in the leading gap (before first work in the lookback) do
+    // not cover structure for the work that follows. ≥5 consecutive work days
+    // still force free-day need after the block.
+    const needsPostBlockFreeDay =
+      consecutiveDays >= CONSECUTIVE_WORK_DAYS_FOR_SDF ||
+      coveringAfterWork < SDF_REQUIRED_IN_168
 
     const absolute =
-      shouldRequireSdfIn168(work168, span168) &&
-      covering < SDF_REQUIRED_IN_168 &&
+      shouldRequireSdfIn168(work168, span168, consecutiveDays) &&
+      needsPostBlockFreeDay &&
       isSdfAbsolutelyRequired({
         dutyEnd: last.end,
         nextDutyStart: nextWork?.start,
         nextDutyEnd: nextWork?.end,
         scheduleEvents: events,
         acclTZ: accl,
+        lastWorkEvent: last,
       })
 
     if (absolute) {

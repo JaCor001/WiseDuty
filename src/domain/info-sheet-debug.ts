@@ -15,6 +15,7 @@ import {
 } from './rest-70042'
 import type { C70029Report, C70029Violation, SingleDayFree } from './rest-70029'
 import { getWorkHoursInWindow } from './rest-70029'
+import { evaluateRdpForDuty, evaluateRdpForReserve } from './rest-70070'
 import { getZonedTimeParts } from './time'
 import type { InfoSheetContent } from './markers'
 import { locationTZ } from './markers'
@@ -57,6 +58,7 @@ function eventAccl(e: DutyEvent, fallback: string): string {
 function describeDutyLine(
   e: DutyEvent,
   allDuties: DutyEvent[],
+  allEvents: DutyEvent[],
   regulator: Regulator,
   globalAcclTZ: string,
   homeBaseTZ: string,
@@ -91,6 +93,19 @@ function describeDutyLine(
       `  endsWithPositioning=true operatingEnd=${e.operatingEnd ? fmtWall(e.operatingEnd, endTZ) : '—'} agreed=${!!e.positioningAgreed}`,
     )
   }
+  if (e.rapStart && !isNaN(e.rapStart.getTime())) {
+    lines.push(`  rapStart=${fmtWall(e.rapStart, accl)} (stored)`)
+  }
+  const rdp = evaluateRdpForDuty(e, allEvents, {
+    regulator,
+    globalAcclTZ,
+    homeBaseTZ,
+  })
+  if (rdp) {
+    lines.push(
+      `  rdp_70070 maxRdp=${rdp.maxRdpHours}h band=${JSON.stringify(rdp.bandLabel)} elapsedRapToReport=${rdp.elapsedRapToReportHours.toFixed(2)}h remainingForFdp=${rdp.remainingRdpForFdpHours.toFixed(2)}h fdpTable=${rdp.fdpTableLimitHours}h limiting=${rdp.limitingMaxFdpHours.toFixed(2)}h source=${rdp.limitingSource}`,
+    )
+  }
   if (e.violated) lines.push(`  violated=true`)
   return lines
 }
@@ -108,7 +123,13 @@ function describeRestLine(e: DutyEvent, globalAcclTZ: string): string[] {
   ].filter(Boolean)
 }
 
-function describeAuxLine(e: DutyEvent, globalAcclTZ: string): string[] {
+function describeAuxLine(
+  e: DutyEvent,
+  allEvents: DutyEvent[],
+  regulator: Regulator,
+  globalAcclTZ: string,
+  homeBaseTZ: string,
+): string[] {
   const accl = eventAccl(e, globalAcclTZ)
   const dur = hoursBetween(e.start, e.end)
   const factor =
@@ -123,6 +144,18 @@ function describeAuxLine(e: DutyEvent, globalAcclTZ: string): string[] {
   ]
   if (e.type === 'free' && e.freePurpose) {
     lines.push(`  freePurpose=${e.freePurpose}`)
+  }
+  if (e.type === 'reserve') {
+    const pair = evaluateRdpForReserve(e, allEvents, {
+      regulator,
+      globalAcclTZ,
+      homeBaseTZ,
+    })
+    if (pair) {
+      lines.push(
+        `  rdp_70070 linkedFdp=${pair.duty.id} maxRdp=${pair.rdp.maxRdpHours}h remainingForFdp=${pair.rdp.remainingRdpForFdpHours.toFixed(2)}h fdpTable=${pair.rdp.fdpTableLimitHours}h limiting=${pair.rdp.limitingMaxFdpHours.toFixed(2)}h source=${pair.rdp.limitingSource}`,
+      )
+    }
   }
   return lines
 }
@@ -169,11 +202,22 @@ export function buildInfoSheetDebugContext(input: DebugContextInput): string {
     const e = focus.event
     lines.push(`kind=event marker=${focus.marker ?? '—'} eventId=${e.id} type=${e.type}`)
     if (e.type === 'duty') {
-      lines.push(...describeDutyLine(e, duties, regulator, acclTZ, homeBaseTZ))
+      lines.push(
+        ...describeDutyLine(
+          e,
+          duties,
+          sorted,
+          regulator,
+          acclTZ,
+          homeBaseTZ,
+        ),
+      )
     } else if (e.type === 'rest') {
       lines.push(...describeRestLine(e, acclTZ))
     } else {
-      lines.push(...describeAuxLine(e, acclTZ))
+      lines.push(
+        ...describeAuxLine(e, sorted, regulator, acclTZ, homeBaseTZ),
+      )
     }
     // Neighbours
     if (e.type === 'duty' || e.type === 'rest') {
@@ -252,11 +296,22 @@ export function buildInfoSheetDebugContext(input: DebugContextInput): string {
   sorted.forEach((e, i) => {
     lines.push(`[${i + 1}]`)
     if (e.type === 'duty') {
-      lines.push(...describeDutyLine(e, duties, regulator, acclTZ, homeBaseTZ))
+      lines.push(
+        ...describeDutyLine(
+          e,
+          duties,
+          sorted,
+          regulator,
+          acclTZ,
+          homeBaseTZ,
+        ),
+      )
     } else if (e.type === 'rest') {
       lines.push(...describeRestLine(e, acclTZ))
     } else {
-      lines.push(...describeAuxLine(e, acclTZ))
+      lines.push(
+        ...describeAuxLine(e, sorted, regulator, acclTZ, homeBaseTZ),
+      )
     }
   })
   lines.push('')

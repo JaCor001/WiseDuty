@@ -311,6 +311,8 @@ export type DutyMarker =
   /** CAR 700.40 reduced rest (10 h + travel / hotel) — distinct from standard RR. */
   | 'R10'
   | 'SDF'
+  /** FDP ends within 1 h 30 of Max FDP (advisory). */
+  | 'NEAR'
 
 function acclTZFor(event: DutyEvent, globalAcclTZ: string): string {
   return event.acclTZ || globalAcclTZ
@@ -560,6 +562,9 @@ export function getDutyMarkers(
     markers.push('N')
   }
 
+  // NEAR (≈MAX) is attached in calendar-day-layout to avoid circular imports
+  // with fdp-near-limit → regulations.
+
   return markers
 }
 
@@ -568,7 +573,7 @@ export type MarkerBarAnchor = 'start' | 'end' | 'center'
 
 export function markerBarAnchor(type: DutyMarker): MarkerBarAnchor {
   if (type === 'E') return 'start'
-  if (type === 'L' || type === 'N') return 'end'
+  if (type === 'L' || type === 'N' || type === 'NEAR') return 'end'
   return 'center' // LNR / LNR2 / LNR3 / RR / R10 / SDF
 }
 
@@ -580,6 +585,7 @@ export function markerChipLabel(type: DutyMarker, violated?: boolean): string {
   if (type === 'RR') return violated ? 'RR!' : 'RR'
   if (type === 'R10') return violated ? '10R!' : '10R'
   if (type === 'SDF') return violated ? 'SDF!' : 'SDF'
+  if (type === 'NEAR') return violated ? 'MAX!' : '≈MAX'
   return type
 }
 

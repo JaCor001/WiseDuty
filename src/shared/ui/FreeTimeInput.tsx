@@ -14,6 +14,10 @@ interface FreeTimeInputProps {
   timeFormat: TimeFormat
   id?: string
   'aria-label'?: string
+  /** Override trailing badge (default 12h / 24h). e.g. `L` or `Z`. */
+  badge?: string
+  className?: string
+  disabled?: boolean
 }
 
 /**
@@ -26,6 +30,9 @@ export default function FreeTimeInput({
   timeFormat,
   id,
   'aria-label': ariaLabel,
+  badge,
+  className,
+  disabled,
 }: FreeTimeInputProps) {
   const [focused, setFocused] = useState(false)
   const [draft, setDraft] = useState('')
@@ -78,20 +85,26 @@ export default function FreeTimeInput({
       ? formatTimeDisplay(value, timeFormat)
       : draft
 
+  const hint = badge ?? (timeFormat === '12h' ? '12h' : '24h')
+
   return (
-    <div className={`free-time-input ${error ? 'invalid' : ''}`}>
+    <div
+      className={`free-time-input${error ? ' invalid' : ''}${disabled ? ' is-disabled' : ''}${className ? ` ${className}` : ''}`}
+    >
       <input
         id={id}
         type="text"
         inputMode="text"
         autoComplete="off"
         spellCheck={false}
+        disabled={disabled}
         aria-label={ariaLabel}
         aria-invalid={error || undefined}
         className="free-time-input-field"
         placeholder={timeInputPlaceholder(timeFormat)}
         value={displayValue}
         onFocus={(e) => {
+          if (disabled) return
           setFocused(true)
           setError(false)
           // 24h: focus shows compact digits for free overwrite (2030)
@@ -105,6 +118,7 @@ export default function FreeTimeInput({
           requestAnimationFrame(() => e.target.select())
         }}
         onChange={(e) => {
+          if (disabled) return
           setDraft(e.target.value)
           setError(false)
         }}
@@ -112,7 +126,7 @@ export default function FreeTimeInput({
         onKeyDown={handleKeyDown}
       />
       <span className="free-time-input-hint" aria-hidden="true">
-        {timeFormat === '12h' ? '12h' : '24h'}
+        {hint}
       </span>
       {error && (
         <span className="free-time-input-error" role="status">

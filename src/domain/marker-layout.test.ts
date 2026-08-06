@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildElnHostMap,
   buildPreferredHostMap,
   dayContentMinRem,
+  deconflictAboveMarkersWithObstacles,
+  elnHostKey,
   isHostDayFor,
   isPreferredMarkerDay,
   markerBandTiers,
   markerVerticalRole,
+  pickRoomierHostDayStartMs,
   preferredMarkerHostDayStartMs,
   preferredMarkerLeftPct,
   preferredMarkerTopPct,
@@ -16,17 +20,15 @@ import {
 import { startOfDayInTimeZone, startOfLocalDay } from './time'
 
 describe('markerVerticalRole', () => {
-  it('places E/L/N above the bar', () => {
-    expect(markerVerticalRole('E')).toBe('above')
-    expect(markerVerticalRole('L')).toBe('above')
-    expect(markerVerticalRole('N')).toBe('above')
-  })
-
-  it('places rest markers below the bar', () => {
+  it('places E/L/N below the bar with rest and near-max chips', () => {
+    expect(markerVerticalRole('E')).toBe('below')
+    expect(markerVerticalRole('L')).toBe('below')
+    expect(markerVerticalRole('N')).toBe('below')
     expect(markerVerticalRole('RR')).toBe('below')
     expect(markerVerticalRole('LNR')).toBe('below')
     expect(markerVerticalRole('LNR2')).toBe('below')
     expect(markerVerticalRole('SDF')).toBe('below')
+    expect(markerVerticalRole('NEAR')).toBe('below')
   })
 })
 
@@ -92,22 +94,24 @@ describe('resolveMarkerOverlaps', () => {
     expect(resolved[1].leader).toBeUndefined()
   })
 
-  it('stacks L+N style chips vertically while keeping left', () => {
+  it('stacks L+N style chips vertically while keeping left and no leaders', () => {
     const resolved = resolveMarkerOverlaps(
       [
         base({
           id: 'L',
-          role: 'above',
+          role: 'below',
           leftPct: 70,
-          preferredTopPct: 28,
+          preferredTopPct: 55,
           barAttachXPct: 80,
+          allowLeader: false,
         }),
         base({
           id: 'N',
-          role: 'above',
+          role: 'below',
           leftPct: 70,
-          preferredTopPct: 28,
+          preferredTopPct: 55,
           barAttachXPct: 80,
+          allowLeader: false,
         }),
       ],
       { gapPct: 2, minTopPct: 4, maxBottomPct: 96, leaderThresholdPct: 3 },
@@ -117,9 +121,8 @@ describe('resolveMarkerOverlaps', () => {
     expect(Math.abs(resolved[0].topPct - resolved[1].topPct)).toBeGreaterThan(
       10,
     )
-    // At least one should be displaced enough for a leader
-    const leaders = resolved.filter((r) => r.leader)
-    expect(leaders.length).toBeGreaterThanOrEqual(1)
+    // E/L/N never get leader lines — association is duty-aligned X
+    expect(resolved.every((r) => r.leader == null)).toBe(true)
   })
 
   it('resolves above and below bands independently', () => {
@@ -165,6 +168,84 @@ describe('resolveMarkerOverlaps', () => {
     )
     const tops = resolved.map((r) => r.topPct).sort((a, b) => a - b)
     expect(tops[1] - tops[0]).toBeGreaterThan(10)
+  })
+})
+
+describe('deconflictAboveMarkersWithObstacles', () => {
+  const input = (
+    partial: Partial<MarkerLayoutInput> & Pick<MarkerLayoutInput, 'id'>,
+  ): MarkerLayoutInput => ({
+    role: 'above',
+    preferredTopPct: 30,
+    leftPct: 70,
+    widthPct: 14,
+    heightPct: 12,
+    barTopPct: 46,
+    barHPct: 10,
+    barAttachXPct: 80,
+    ...partial,
+  })
+
+  it('moves E/L/N up (not far sideways) so they clear stamps and stay on duty X', () => {
+    const inputs = [input({ id: 'N', leftPct: 70, preferredTopPct: 32 })]
+    const resolved: ResolvedMarkerLayout[] = [
+      {
+        id: 'N',
+        role: 'above',
+        leftPct: 70,
+        topPct: 32,
+        widthPct: 14,
+        heightPct: 12,
+      },
+    ]
+    // Stamp band sitting where the N chip is
+    const obstacles = [{ left: 68, top: 30, w: 14, h: 10 }]
+    const out = deconflictAboveMarkersWithObstacles(
+      resolved,
+      inputs,
+      obstacles,
+      { minTopPct: 8, maxBottomPct: 96, gapPct: 1.5 },
+    )
+    const n = out.find((r) => r.id === 'N')!
+    // No longer overlaps the stamp box
+    const stillHits =
+      !(
+        n.leftPct + n.widthPct + 1.5 <= obstacles[0].left ||
+        obstacles[0].left + obstacles[0].w + 1.5 <= n.leftPct ||
+        n.topPct + n.heightPct + 1.5 <= obstacles[0].top ||
+        obstacles[0].top + obstacles[0].h + 1.5 <= n.topPct
+      )
+    expect(stillHits).toBe(false)
+    // Prefer vertical clearance; stay near duty-aligned left
+    expect(n.topPct).toBeLessThan(32 - 0.5)
+    expect(Math.abs(n.leftPct - 70)).toBeLessThanOrEqual(8)
+    // No leader lines for E/L/N
+    expect(n.leader).toBeUndefined()
+  })
+
+  it('does not move below-bar markers', () => {
+    const inputs = [
+      input({ id: 'RR', role: 'below', leftPct: 40, preferredTopPct: 55 }),
+    ]
+    const resolved: ResolvedMarkerLayout[] = [
+      {
+        id: 'RR',
+        role: 'below',
+        leftPct: 40,
+        topPct: 55,
+        widthPct: 14,
+        heightPct: 12,
+      },
+    ]
+    const obstacles = [{ left: 35, top: 50, w: 20, h: 12 }]
+    const out = deconflictAboveMarkersWithObstacles(
+      resolved,
+      inputs,
+      obstacles,
+      { minTopPct: 8, maxBottomPct: 96 },
+    )
+    expect(out[0].topPct).toBe(55)
+    expect(out[0].leftPct).toBe(40)
   })
 })
 
@@ -296,5 +377,69 @@ describe('isPreferredMarkerDay', () => {
     if (other !== host) {
       expect(isHostDayFor(map, 'r1', other)).toBe(false)
     }
+  })
+})
+
+describe('pickRoomierHostDayStartMs + buildElnHostMap', () => {
+  const TZ = 'America/Toronto'
+
+  it('keeps natural day when it has decent width and low load', () => {
+    // Early duty same day: natural = that day
+    const start = new Date('2024-06-10T11:00:00.000Z') // 07:00 EDT
+    const end = new Date('2024-06-10T20:00:00.000Z')
+    const natural = startOfDayInTimeZone(start, TZ).getTime()
+    const host = pickRoomierHostDayStartMs(start, end, TZ, {
+      naturalDayStartMs: natural,
+      dayLoad: new Map(),
+    })
+    expect(host).toBe(natural)
+  })
+
+  it('moves off a thin natural day when another span day is roomier', () => {
+    // Overnight: late start day sliver vs full morning on end day
+    const start = new Date('2024-06-10T03:30:00.000Z') // 23:30 EDT Jun 9
+    const end = new Date('2024-06-10T16:00:00.000Z') // 12:00 EDT Jun 10
+    const startDay = startOfDayInTimeZone(start, TZ)
+    const endDay = startOfDayInTimeZone(end, TZ)
+    // Force high load on start day so host prefers end day
+    const dayLoad = new Map<number, number>([[startDay.getTime(), 5]])
+    const host = pickRoomierHostDayStartMs(start, end, TZ, {
+      naturalDayStartMs: startDay.getTime(),
+      dayLoad,
+      naturalBonus: 10, // smaller bonus so load wins
+    })
+    expect(host).toBe(endDay.getTime())
+  })
+
+  it('buildElnHostMap assigns one host per chip and spreads load', () => {
+    const d1Start = new Date('2024-06-10T11:00:00.000Z')
+    const d1End = new Date('2024-06-10T20:00:00.000Z')
+    const d2Start = new Date('2024-06-10T12:00:00.000Z')
+    const d2End = new Date('2024-06-10T21:00:00.000Z')
+    const map = buildElnHostMap(
+      [
+        {
+          id: 'duty-a',
+          start: d1Start,
+          end: d1End,
+          operatingEnd: d1End,
+          markers: ['E'],
+        },
+        {
+          id: 'duty-b',
+          start: d2Start,
+          end: d2End,
+          operatingEnd: d2End,
+          markers: ['E'],
+        },
+      ],
+      TZ,
+    )
+    expect(map.has(elnHostKey('duty-a', 'E'))).toBe(true)
+    expect(map.has(elnHostKey('duty-b', 'E'))).toBe(true)
+    // Both same-day duties stay on that civil day
+    const day = startOfDayInTimeZone(d1Start, TZ).getTime()
+    expect(map.get(elnHostKey('duty-a', 'E'))).toBe(day)
+    expect(map.get(elnHostKey('duty-b', 'E'))).toBe(day)
   })
 })

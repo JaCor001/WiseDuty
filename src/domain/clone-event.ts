@@ -56,6 +56,8 @@ export interface CloneableDutySlice {
   type?: DutyType
   eventKind?: EventKind
   splitBreak?: SplitDutyBreak
+  /** CAR 700.70 RAP start for RDP when FDP was called from reserve. */
+  rapStart?: Date
 }
 
 export interface CloneablePrefixReserve {
@@ -99,6 +101,9 @@ export function shiftCloneableDuty(
       operatingEnd: duty.operatingEnd
         ? new Date(duty.operatingEnd.getTime())
         : undefined,
+      rapStart: duty.rapStart
+        ? new Date(duty.rapStart.getTime())
+        : undefined,
       flights: duty.flights?.map((f) => ({
         ...f,
         dep: new Date(f.dep.getTime()),
@@ -127,6 +132,9 @@ export function shiftCloneableDuty(
     end: shiftWallTimeByCivilDays(duty.end, endTz, dayDelta),
     operatingEnd: duty.operatingEnd
       ? shiftWallTimeByCivilDays(duty.operatingEnd, endTz, dayDelta)
+      : undefined,
+    rapStart: duty.rapStart
+      ? shiftWallTimeByCivilDays(duty.rapStart, startTz, dayDelta)
       : undefined,
     flights: duty.flights?.map((f) => shiftFlightLeg(f, dayDelta, fallback)),
     splitBreak: duty.splitBreak

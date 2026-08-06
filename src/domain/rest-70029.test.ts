@@ -219,8 +219,9 @@ describe('evaluate70029OptionC', () => {
     ).toBe(false)
   })
 
-  it('does not display SDF chips after a single duty (even if free nights exist)', () => {
-    // Long free after one duty can form many technical SDFs; none should display
+  it('displays earliest post-work free day after a duty (not every free night pair)', () => {
+    // Long free after one duty forms many technical SDFs; show only the earliest
+    // free day right after release (awareness), not a chip for every pair.
     const events = [
       duty(
         'only',
@@ -238,8 +239,93 @@ describe('evaluate70029OptionC', () => {
       },
     ]
     const report = evaluate70029OptionC(events, HOME, 'TC')
-    expect(report.sdfs.length).toBeGreaterThan(0) // detected
-    expect(report.displaySdfs.length).toBe(0) // not shown
+    expect(report.sdfs.length).toBeGreaterThan(1)
+    const post = report.displaySdfs.filter((d) =>
+      d.reasons.includes('post_work_free'),
+    )
+    expect(post.length).toBe(1)
+    // Earliest free day starts on the first night after release
+    expect(post[0].sdf.start.getTime()).toBe(report.sdfs[0].start.getTime())
+  })
+
+  it('displays SDF after 4 consecutive RAPs when the next days are free', () => {
+    // Free day not mandatory yet (only 4 days), but open calendar after the
+    // block forms a completed free day — show it for awareness.
+    const events: DutyEvent[] = [10, 11, 12, 13].map((d) => ({
+      id: `r${d}`,
+      title: 'Home Reserve',
+      type: 'reserve' as const,
+      start: zonedWallTime(HOME, 2026, 8, d, 6, 0),
+      end: zonedWallTime(HOME, 2026, 8, d, 18, 0),
+      acclTZ: HOME,
+      workFactor: 0.33,
+    }))
+    const report = evaluate70029OptionC(events, HOME, 'TC')
+    expect(report.sdfs.length).toBeGreaterThan(0)
+    expect(
+      report.displaySdfs.some((d) => d.reasons.includes('post_work_free')),
+    ).toBe(true)
+    // No free-day *rest requirement* force from display alone — just awareness
+    const afterBlock = report.displaySdfs.filter(
+      (d) =>
+        d.sdf.start.getTime() >=
+        zonedWallTime(HOME, 2026, 8, 13, 18, 0).getTime() - 60_000,
+    )
+    expect(afterBlock.length).toBeGreaterThan(0)
+  })
+
+  it('displays SDF for awareness when free day fully covers a 168 h window that has work', () => {
+    // User intent: free weekend before a RAP block still sits in the lookback
+    // ending at the last RAP — show the SDF chip so coverage is visible.
+    const events: DutyEvent[] = [
+      {
+        id: 'r13',
+        title: 'Home Reserve',
+        type: 'reserve',
+        start: zonedWallTime(HOME, 2026, 8, 13, 6, 0),
+        end: zonedWallTime(HOME, 2026, 8, 13, 18, 0),
+        acclTZ: HOME,
+        workFactor: 0.33,
+      },
+      {
+        id: 'r14',
+        title: 'Home Reserve',
+        type: 'reserve',
+        start: zonedWallTime(HOME, 2026, 8, 14, 6, 0),
+        end: zonedWallTime(HOME, 2026, 8, 14, 18, 0),
+        acclTZ: HOME,
+        workFactor: 0.33,
+      },
+    ]
+    for (let day = 18; day <= 22; day++) {
+      events.push({
+        id: `r${day}`,
+        title: 'Home Reserve',
+        type: 'reserve',
+        start: zonedWallTime(HOME, 2026, 8, day, 6, 0),
+        end: zonedWallTime(HOME, 2026, 8, day, 18, 0),
+        acclTZ: HOME,
+        workFactor: 0.33,
+      })
+    }
+    const report = evaluate70029OptionC(events, HOME, 'TC')
+    expect(report.sdfs.length).toBeGreaterThan(0)
+    expect(
+      report.displaySdfs.some(
+        (d) =>
+          d.reasons.includes('covers_work') ||
+          d.reasons.includes('load_bearing'),
+      ),
+    ).toBe(true)
+    // Free day mid Aug 15–17 range should be among displayed
+    const midFree = report.displaySdfs.some((d) => {
+      const s = d.sdf.start.getTime()
+      return (
+        s >= zonedWallTime(HOME, 2026, 8, 15, 0, 0).getTime() &&
+        s < zonedWallTime(HOME, 2026, 8, 18, 0, 0).getTime()
+      )
+    })
+    expect(midFree).toBe(true)
   })
 
   it('detects trailing free-day SDFs after dense work but does not force display until absolutely required', () => {

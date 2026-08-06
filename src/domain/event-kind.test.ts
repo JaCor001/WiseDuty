@@ -53,7 +53,8 @@ describe('fieldsForEventKind', () => {
     expect(fieldsForEventKind('simulator').has('flights')).toBe(false)
   })
 
-  it('offers Add Flight handoff only on reserve/standby', () => {
+  it('offers Add Flight handoff on reserve/standby kinds (add or edit)', () => {
+    // Form enables + Add Flight whenever this field is present (not mode-gated).
     const kinds: EventKind[] = [
       'airport_reserve',
       'airport_standby',

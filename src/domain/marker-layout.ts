@@ -32,6 +32,11 @@ export interface MarkerLayoutInput {
   barHPct: number
   /** Horizontal attach on the bar (start / mid / end X). */
   barAttachXPct: number
+  /**
+   * When false, never attach a leader even if stacked away from the bar.
+   * E/L/N use duty-aligned X instead of leader lines.
+   */
+  allowLeader?: boolean
 }
 
 export interface LeaderLine {
@@ -66,9 +71,16 @@ export interface ResolveMarkerOverlapsOpts {
   leaderThresholdPct?: number
 }
 
+export type LayoutRect = {
+  left: number
+  top: number
+  w: number
+  h: number
+}
+
 function boxesOverlap(
-  a: { left: number; top: number; w: number; h: number },
-  b: { left: number; top: number; w: number; h: number },
+  a: LayoutRect,
+  b: LayoutRect,
   gap: number,
 ): boolean {
   return !(
@@ -77,6 +89,167 @@ function boxesOverlap(
     a.top + a.h + gap <= b.top ||
     b.top + b.h + gap <= a.top
   )
+}
+
+function anyRectOverlap(
+  box: LayoutRect,
+  obstacles: LayoutRect[],
+  gap: number,
+): boolean {
+  return obstacles.some((o) => boxesOverlap(box, o, gap))
+}
+
+/**
+ * After peer stacking, push **above-bar** chips (E/L/N) clear of obstacles
+ * such as time-stamp labels.
+ *
+ * Prefer **vertical** clearance only so chips stay laterally aligned with their
+ * duty bar. Allow only a tiny lateral nudge as a last resort. Never draw
+ * leader lines for above-bar markers — association is the duty-aligned X.
+ * Below-bar markers are left unchanged.
+ */
+export function deconflictAboveMarkersWithObstacles(
+  resolved: ResolvedMarkerLayout[],
+  inputs: MarkerLayoutInput[],
+  obstacles: LayoutRect[],
+  opts: {
+    gapPct?: number
+    minTopPct: number
+    maxBottomPct: number
+    edgePadPct?: number
+    /** Max |Δleft| from duty-aligned left (cell %). Default ~ half chip. */
+    maxLateralDriftPct?: number
+  },
+): ResolvedMarkerLayout[] {
+  if (obstacles.length === 0) return resolved
+  const gap = opts.gapPct ?? 1.4
+  const edgePad = opts.edgePadPct ?? 2
+  const byId = new Map(inputs.map((i) => [i.id, i]))
+
+  // Process left→right so later chips react to earlier shifts
+  const order = [...resolved].sort((a, b) => a.leftPct - b.leftPct)
+  const out = new Map<string, ResolvedMarkerLayout>()
+
+  for (const r of order) {
+    const input = byId.get(r.id)
+    if (!input || r.role !== 'above') {
+      out.set(r.id, r)
+      continue
+    }
+
+    // Always prefer the duty-aligned left from layout input (not a prior drift)
+    const homeLeft = input.leftPct
+    const w = r.widthPct
+    const h = r.heightPct
+    const minLeft = edgePad
+    const maxLeft = Math.max(minLeft, 100 - edgePad - w)
+    const maxDrift =
+      opts.maxLateralDriftPct ?? Math.min(w * 0.4, 8)
+
+    const peerBoxes: LayoutRect[] = [...out.values()]
+      .filter((p) => p.role === 'above')
+      .map((p) => ({
+        left: p.leftPct,
+        top: p.topPct,
+        w: p.widthPct,
+        h: p.heightPct,
+      }))
+    const blocked = [...obstacles, ...peerBoxes]
+
+    const fits = (left: number, top: number) => {
+      const t = clampTop(top, h, opts.minTopPct, opts.maxBottomPct)
+      const l = Math.min(maxLeft, Math.max(minLeft, left))
+      return !anyRectOverlap({ left: l, top: t, w, h }, blocked, gap)
+    }
+
+    let left = Math.min(maxLeft, Math.max(minLeft, homeLeft))
+    let top = r.topPct
+
+    if (!fits(left, top)) {
+      let found = false
+
+      // 1) Vertical only — keep X locked to the duty bar
+      for (let step = 1; step <= 14 && !found; step++) {
+        const tryTop = r.topPct - step * (h * 0.45 + gap)
+        if (fits(left, tryTop)) {
+          top = clampTop(tryTop, h, opts.minTopPct, opts.maxBottomPct)
+          found = true
+        }
+      }
+
+      // 2) Tiny lateral only if still blocked (stay near duty attach)
+      if (!found) {
+        const lateral: number[] = []
+        for (let s = 1; s <= 4; s++) {
+          const d = Math.min(maxDrift, (w * 0.2 + gap) * s)
+          lateral.push(d, -d)
+        }
+        for (const dx of lateral) {
+          const tryLeft = homeLeft + dx
+          if (Math.abs(tryLeft - homeLeft) > maxDrift + 0.01) continue
+          if (fits(tryLeft, top)) {
+            left = Math.min(maxLeft, Math.max(minLeft, tryLeft))
+            found = true
+            break
+          }
+        }
+      }
+
+      // 3) Combined: vertical steps × small lateral (still capped)
+      if (!found) {
+        for (let step = 0; step <= 12 && !found; step++) {
+          const tryTop = r.topPct - step * (h * 0.45 + gap)
+          const lateral: number[] = [0]
+          for (let s = 1; s <= 4; s++) {
+            const d = Math.min(maxDrift, (w * 0.2 + gap) * s)
+            lateral.push(d, -d)
+          }
+          for (const dx of lateral) {
+            const tryLeft = homeLeft + dx
+            if (Math.abs(tryLeft - homeLeft) > maxDrift + 0.01) continue
+            if (fits(tryLeft, tryTop)) {
+              left = Math.min(maxLeft, Math.max(minLeft, tryLeft))
+              top = clampTop(tryTop, h, opts.minTopPct, opts.maxBottomPct)
+              found = true
+              break
+            }
+          }
+        }
+      }
+
+      if (!found) {
+        // Best effort: stay on duty X, sit just above colliding obstacles
+        let clearTop = r.topPct
+        for (const o of obstacles) {
+          if (
+            boxesOverlap(
+              { left: homeLeft, top: clearTop, w, h },
+              o,
+              gap,
+            )
+          ) {
+            clearTop = Math.min(clearTop, o.top - gap - h)
+          }
+        }
+        top = clampTop(clearTop, h, opts.minTopPct, opts.maxBottomPct)
+        left = Math.min(maxLeft, Math.max(minLeft, homeLeft))
+      }
+    }
+
+    top = clampTop(top, h, opts.minTopPct, opts.maxBottomPct)
+    left = Math.min(maxLeft, Math.max(minLeft, left))
+
+    // E/L/N never get leader lines — keep association via duty-aligned X
+    out.set(r.id, {
+      ...r,
+      leftPct: left,
+      topPct: top,
+      leader: undefined,
+    })
+  }
+
+  // Preserve original order
+  return resolved.map((r) => out.get(r.id) ?? r)
 }
 
 function clampTop(
@@ -90,14 +263,22 @@ function clampTop(
 }
 
 /**
- * Whether a marker type is an FDP day-type label (above the bar)
- * vs a rest/free-day requirement (below the bar).
+ * Vertical band for a marker type.
+ * E/L/N sit **below** the duty bar (with rest/near chips) so the stamp band
+ * above the bar stays clear and spacing is easier.
  */
 export function markerVerticalRole(
   type: string,
 ): MarkerVerticalRole {
-  if (type === 'E' || type === 'L' || type === 'N') return 'above'
+  // All calendar chips currently share the below-bar band.
+  // (Role 'above' remains for future non-stamp overlays.)
+  void type
   return 'below'
+}
+
+/** E/L/N duty classification chips (never draw leader lines). */
+export function isElnMarkerType(type: string): boolean {
+  return type === 'E' || type === 'L' || type === 'N'
 }
 
 /**
@@ -151,7 +332,10 @@ export function preferredMarkerTopPct(
 /**
  * Greedy vertical stacking within each band (above / below).
  * Horizontal left is fixed; chips that collide are nudged up (above)
- * or down (below). Leaders are attached when displacement is large.
+ * or down (below).
+ *
+ * Leaders are only for **below-bar** rest markers when heavily stacked —
+ * E/L/N stay associated by their duty-aligned X and never get leader lines.
  */
 export function resolveMarkerOverlaps(
   markers: MarkerLayoutInput[],
@@ -241,29 +425,20 @@ export function resolveMarkerOverlaps(
         }
       }
 
-      const threshold =
-        opts.leaderThresholdPct ?? Math.max(1.2, m.heightPct * 0.45)
-      const displaced = Math.abs(top - m.preferredTopPct) > threshold
-
+      // Rest / free-day markers may keep a leader when stacked far from the bar.
+      // E/L/N (allowLeader === false) never get lines — duty-aligned X is enough.
       let leader: LeaderLine | undefined
-      if (displaced) {
-        const chipCx = m.leftPct + m.widthPct / 2
-        const attachX = Math.min(
-          Math.max(m.barAttachXPct, m.leftPct),
-          m.leftPct + m.widthPct,
-        )
-        // Prefer a vertical-ish line at the bar attach X, clamped into chip width
-        const x = (attachX + chipCx) / 2
-        if (m.role === 'above') {
-          // From bottom of chip down to top of bar
-          leader = {
-            x1: x,
-            y1: top + m.heightPct,
-            x2: x,
-            y2: m.barTopPct,
-          }
-        } else {
-          // From top of chip up to bottom of bar
+      if (m.role === 'below' && m.allowLeader !== false) {
+        const threshold =
+          opts.leaderThresholdPct ?? Math.max(1.2, m.heightPct * 0.45)
+        const displaced = Math.abs(top - m.preferredTopPct) > threshold
+        if (displaced) {
+          const chipCx = m.leftPct + m.widthPct / 2
+          const attachX = Math.min(
+            Math.max(m.barAttachXPct, m.leftPct),
+            m.leftPct + m.widthPct,
+          )
+          const x = (attachX + chipCx) / 2
           leader = {
             x1: x,
             y1: top,
@@ -416,6 +591,131 @@ export function isHostDayFor(
 ): boolean {
   const host = hostMap.get(id)
   return host != null && host === dayStartMs
+}
+
+/** Map key for an E/L/N chip host entry. */
+export function elnHostKey(eventId: string, type: string): string {
+  return `${eventId}:${type}`
+}
+
+export type ElnHostDutyInput = {
+  id: string
+  /** Visual bar start (duty report). */
+  start: Date
+  /** Visual bar end (includes trailing DH when present). */
+  end: Date
+  /** Operating release — natural day for L/N. */
+  operatingEnd: Date
+  markers: Array<'E' | 'L' | 'N'>
+}
+
+/**
+ * Pick the civil day that should host a single chip for a multi-day bar.
+ * Prefers the natural day (start for E, operating-end for L/N) but will
+ * move to a wider / less crowded day of the same bar when that day is a
+ * thin sliver or already stacked with many below-bar markers.
+ */
+export function pickRoomierHostDayStartMs(
+  eventStart: Date,
+  eventEnd: Date,
+  displayTZ: string,
+  opts: {
+    naturalDayStartMs: number
+    /** Existing below-bar load per dayStartMs (rest chips, prior ELN, …). */
+    dayLoad: Map<number, number>
+    /** Penalty per co-located marker. Default 18. */
+    loadWeight?: number
+    /** Bonus for staying on the natural day. Default 24. */
+    naturalBonus?: number
+    minWidthPct?: number
+  },
+): number | null {
+  if (eventEnd.getTime() <= eventStart.getTime()) return null
+
+  const loadWeight = opts.loadWeight ?? 18
+  const naturalBonus = opts.naturalBonus ?? 24
+  const minWidthPct = opts.minWidthPct ?? MIN_MARKER_BAR_WIDTH_PCT
+
+  let cursor = startOfDayInTimeZone(eventStart, displayTZ)
+  let bestDayStart = opts.naturalDayStartMs
+  let bestScore = -Infinity
+  let dayCount = 0
+  let sawNatural = false
+
+  while (cursor.getTime() < eventEnd.getTime() && dayCount < 400) {
+    const d0 = cursor
+    const d1 = addCivilDaysInTimeZone(cursor, displayTZ, 1)
+    if (eventStart < d1 && eventEnd > d0) {
+      dayCount += 1
+      const dayStartMs = d0.getTime()
+      const width = dayBarPosition(eventStart, eventEnd, d0, d1).width
+      const load = opts.dayLoad.get(dayStartMs) ?? 0
+      const isNatural = dayStartMs === opts.naturalDayStartMs
+      if (isNatural) sawNatural = true
+
+      let score = width - load * loadWeight
+      if (isNatural) score += naturalBonus
+      if (width < minWidthPct) score -= 40
+      // Prefer earlier days on ties for stability
+      score -= dayCount * 0.01
+
+      if (score > bestScore) {
+        bestScore = score
+        bestDayStart = dayStartMs
+      }
+    }
+    cursor = d1
+  }
+
+  if (dayCount === 0) return null
+  // If natural day is outside the visual span (TZ edge), fall back to best
+  if (!sawNatural && opts.naturalDayStartMs) {
+    // keep best among span
+  }
+  return bestDayStart
+}
+
+/**
+ * Precompute host day for each E/L/N chip so multi-day duties land on the
+ * roomier cell and avoid piling onto days already full of rest markers.
+ *
+ * Key: `eventId:type` → dayStartMs (display TZ midnight).
+ */
+export function buildElnHostMap(
+  duties: ElnHostDutyInput[],
+  displayTZ: string,
+  /** Rest/SDF host map — seeds per-day load before ELN assignment. */
+  restHostMap?: Map<string, number>,
+): Map<string, number> {
+  const dayLoad = new Map<number, number>()
+  if (restHostMap) {
+    for (const dayMs of restHostMap.values()) {
+      dayLoad.set(dayMs, (dayLoad.get(dayMs) ?? 0) + 1)
+    }
+  }
+
+  const sorted = [...duties].sort(
+    (a, b) => a.start.getTime() - b.start.getTime() || a.id.localeCompare(b.id),
+  )
+  const map = new Map<string, number>()
+
+  for (const duty of sorted) {
+    const barEnd =
+      duty.end.getTime() > duty.start.getTime() ? duty.end : duty.operatingEnd
+    for (const type of duty.markers) {
+      const naturalInstant = type === 'E' ? duty.start : duty.operatingEnd
+      const naturalDay = startOfDayInTimeZone(naturalInstant, displayTZ)
+      const host = pickRoomierHostDayStartMs(duty.start, barEnd, displayTZ, {
+        naturalDayStartMs: naturalDay.getTime(),
+        dayLoad,
+      })
+      if (host == null) continue
+      map.set(elnHostKey(duty.id, type), host)
+      dayLoad.set(host, (dayLoad.get(host) ?? 0) + 1)
+    }
+  }
+
+  return map
 }
 
 /**

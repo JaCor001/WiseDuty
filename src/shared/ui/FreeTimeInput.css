@@ -19,8 +19,9 @@
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
   transition: border-color 0.2s, box-shadow 0.2s;
-  /* Truncate long typed values; placeholders stay short */
-  text-overflow: ellipsis;
+  /* Prefer showing full HH:mm; dual L/Z fields are short enough */
+  text-overflow: clip;
+  overflow: hidden;
 }
 
 .free-time-input-field:focus {
@@ -65,4 +66,9 @@
   margin-top: 0.25rem;
   font-size: 0.8rem;
   color: #c62828;
+}
+
+.free-time-input.is-disabled .free-time-input-field {
+  opacity: 0.55;
+  cursor: not-allowed;
 }

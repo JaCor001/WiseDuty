@@ -1,22 +1,37 @@
-import { memo, type CSSProperties, type MouseEvent, type PointerEvent } from 'react'
+import {
+  memo,
+  useCallback,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+  type PointerEvent,
+} from 'react'
 import type {
   DayBarSpec,
   DayLayoutSpec,
   DayMarkerSpec,
 } from './domain/calendar-day-layout'
+import {
+  buildStampConnectorPlans,
+  connectorPointsAttr,
+} from './domain/time-stamps'
 
 export interface CalendarDayCellProps {
   layout: DayLayoutSpec
   isSelected: boolean
   isToday: boolean
   isInRange: boolean
+  /**
+   * Shared month-grid highlight: event id under hover/hold so start/end
+   * stamps light on every day cell that owns them (multi-day bars).
+   */
+  activeEventId: string | null
+  onActiveEventChange: (eventId: string | null) => void
   onDayClick: (dayStartMs: number) => void
   onDayPressStart: (dayStartMs: number) => void
   onDayPressEnd: () => void
   onBarClick: (bar: DayBarSpec, e: MouseEvent) => void
-  /** Long-press (0.5s) start on a duty/work bar — stops day long-press. */
-  onBarPressStart: (bar: DayBarSpec) => void
-  onBarPressEnd: () => void
   onMarkerClick: (marker: DayMarkerSpec, e: MouseEvent) => void
   onViolationClick: (dayStartMs: number, e: MouseEvent) => void
 }
@@ -26,15 +41,26 @@ function CalendarDayCellInner({
   isSelected,
   isToday,
   isInRange,
+  activeEventId,
+  onActiveEventChange,
   onDayClick,
   onDayPressStart,
   onDayPressEnd,
   onBarClick,
-  onBarPressStart,
-  onBarPressEnd,
   onMarkerClick,
   onViolationClick,
 }: CalendarDayCellProps) {
+  /** Pointer is held on a bar in *this* cell (touch / click-hold). */
+  const [holding, setHolding] = useState(false)
+
+  // Light the day when *this* cell has a bar or stamp for the active event
+  const dayHasActive =
+    !!activeEventId &&
+    (layout.bars.some(
+      (b) => b.kind !== 'phantom' && b.eventId === activeEventId,
+    ) ||
+      layout.timeStamps.some((ts) => ts.eventIds.includes(activeEventId)))
+
   const className = [
     'day',
     layout.status,
@@ -42,19 +68,27 @@ function CalendarDayCellInner({
     isSelected ? 'selected' : '',
     isInRange ? 'in-range' : '',
     isToday ? 'today' : '',
+    dayHasActive ? 'day--bar-active' : '',
   ]
     .filter(Boolean)
     .join(' ')
 
+  const clearActive = useCallback(() => {
+    onActiveEventChange(null)
+    setHolding(false)
+  }, [onActiveEventChange])
+
   const handleBarPointerDown = (bar: DayBarSpec, e: PointerEvent) => {
     // Keep day long-press from starting when interacting with an event bar
     e.stopPropagation()
+    if (bar.kind === 'phantom') return
     try {
       e.currentTarget.setPointerCapture(e.pointerId)
     } catch {
       /* ignore — not all targets support capture */
     }
-    onBarPressStart(bar)
+    onActiveEventChange(bar.eventId)
+    setHolding(true)
   }
 
   const handleBarPointerEnd = (e: PointerEvent) => {
@@ -66,7 +100,13 @@ function CalendarDayCellInner({
         /* ignore */
       }
     }
-    onBarPressEnd()
+    setHolding(false)
+    // Keep hover highlight if the pointer is still over the bar (desktop)
+    if (e.pointerType === 'mouse' && e.type === 'pointerup') {
+      // leave activeEventId for mouseenter/leave to manage
+      return
+    }
+    onActiveEventChange(null)
   }
 
   /** Mouse/touch companions: pointer stopPropagation does not block these. */
@@ -74,40 +114,119 @@ function CalendarDayCellInner({
     e.stopPropagation()
   }
 
+  // Day-wide connector plan: clip under foreign stamps + gap at crossings
+  const connectorByKey = useMemo(() => {
+    const plans = buildStampConnectorPlans(layout.timeStamps)
+    const map = new Map<string, typeof plans[0]['pieces']>()
+    for (const p of plans) map.set(p.key, p.pieces)
+    return map
+  }, [layout.timeStamps])
+
   return (
     <div
       className={className}
       onMouseDown={() => onDayPressStart(layout.dayStartMs)}
       onMouseUp={onDayPressEnd}
-      onMouseLeave={onDayPressEnd}
+      onMouseLeave={() => {
+        onDayPressEnd()
+        if (!holding) clearActive()
+      }}
       onTouchStart={() => onDayPressStart(layout.dayStartMs)}
       onTouchEnd={onDayPressEnd}
       onClick={() => onDayClick(layout.dayStartMs)}
     >
       <span className="day-number">{layout.dayNumber}</span>
-      {layout.bars.map((bar) => (
-        <div
-          key={bar.key}
-          className={bar.className}
-          style={{
-            left: bar.left,
-            width: bar.width,
-            top: bar.top,
-          }}
-          title={bar.title}
-          onPointerDown={(e) => handleBarPointerDown(bar, e)}
-          onPointerUp={handleBarPointerEnd}
-          onPointerCancel={handleBarPointerEnd}
-          onMouseDown={stopDayPress}
-          onMouseUp={stopDayPress}
-          onTouchStart={stopDayPress}
-          onTouchEnd={(e) => {
-            stopDayPress(e)
-            onBarPressEnd()
-          }}
-          onClick={(e) => onBarClick(bar, e)}
-        />
-      ))}
+      {layout.bars.map((bar) => {
+        const isActive =
+          !!activeEventId &&
+          bar.eventId === activeEventId &&
+          bar.kind !== 'phantom'
+        return (
+          <div
+            key={bar.key}
+            className={`${bar.className}${isActive ? ' is-active' : ''}`}
+            style={{
+              left: bar.left,
+              width: bar.width,
+              top: bar.top,
+            }}
+            title={bar.title}
+            onPointerDown={(e) => handleBarPointerDown(bar, e)}
+            onPointerUp={handleBarPointerEnd}
+            onPointerCancel={(e) => {
+              handleBarPointerEnd(e)
+              clearActive()
+            }}
+            onMouseEnter={() => {
+              if (bar.kind === 'phantom') return
+              onActiveEventChange(bar.eventId)
+            }}
+            onMouseLeave={() => {
+              if (!holding) onActiveEventChange(null)
+            }}
+            onMouseDown={stopDayPress}
+            onMouseUp={stopDayPress}
+            onTouchStart={stopDayPress}
+            onTouchEnd={(e) => {
+              stopDayPress(e)
+              setHolding(false)
+              onActiveEventChange(null)
+            }}
+            onClick={(e) => onBarClick(bar, e)}
+          />
+        )
+      })}
+      {layout.timeStamps.map((ts) => {
+        const lit =
+          !!activeEventId && ts.eventIds.includes(activeEventId)
+        const labelX = ts.labelCenterPct
+        const labelY = ts.labelTopPct
+        const pieces = connectorByKey.get(ts.key) ?? []
+        return (
+          <div
+            key={ts.key}
+            className={`event-time-stamp event-time-stamp--${ts.edge}${
+              lit ? ' is-lit' : ''
+            }${
+              (ts.stackTier ?? 0) > 0
+                ? ` event-time-stamp--tier-${Math.min(ts.stackTier, 5)}`
+                : ''
+            }`}
+            aria-hidden
+          >
+            {/* Full-cell SVG: pieces already clipped under foreign stamps +
+                gapped at line crossings for a clean cartographic look */}
+            <svg
+              className="event-time-stamp-svg"
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
+              aria-hidden
+            >
+              {pieces.map((pts, i) =>
+                pts.length >= 2 ? (
+                  <polyline
+                    key={`${ts.key}-c${i}`}
+                    className="event-time-stamp-connector"
+                    points={connectorPointsAttr(pts)}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ) : null,
+              )}
+            </svg>
+            <span
+              className="event-time-stamp-label"
+              style={
+                {
+                  left: `${labelX}%`,
+                  top: `${labelY}%`,
+                } as CSSProperties
+              }
+            >
+              {ts.label}
+            </span>
+          </div>
+        )
+      })}
       {layout.leaders.map((leader) => (
         <div
           key={leader.key}

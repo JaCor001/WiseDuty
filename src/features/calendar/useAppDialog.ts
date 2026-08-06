@@ -1,4 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
+import type { AppDialogTone } from '../../shared/ui/AppDialog'
+
+export type { AppDialogTone }
 
 export type DialogState =
   | {
@@ -6,6 +9,7 @@ export type DialogState =
       title: string
       message: string
       confirmLabel?: string
+      tone?: AppDialogTone
       onConfirm: () => void
     }
   | {
@@ -15,6 +19,7 @@ export type DialogState =
       confirmLabel?: string
       cancelLabel?: string
       danger?: boolean
+      tone?: AppDialogTone
       onConfirm: () => void
       onCancel: () => void
     }
@@ -22,7 +27,13 @@ export type DialogState =
       kind: 'choice'
       title: string
       message: string
-      choices: { id: string; label: string }[]
+      choices: {
+        id: string
+        label: string
+        detailLabel?: string
+        detail?: string
+      }[]
+      tone?: AppDialogTone
       onChoose: (id: string) => void
       onCancel: () => void
     }
@@ -36,25 +47,39 @@ export function useAppDialog() {
 
   const close = useCallback(() => setDialog(null), [])
 
-  const showAlert = useCallback((title: string, message: string) => {
-    return new Promise<void>((resolve) => {
-      setDialog({
-        kind: 'alert',
-        title,
-        message,
-        onConfirm: () => {
-          setDialog(null)
-          resolve()
-        },
+  const showAlert = useCallback(
+    (
+      title: string,
+      message: string,
+      opts?: { confirmLabel?: string; tone?: AppDialogTone },
+    ) => {
+      return new Promise<void>((resolve) => {
+        setDialog({
+          kind: 'alert',
+          title,
+          message,
+          confirmLabel: opts?.confirmLabel,
+          tone: opts?.tone,
+          onConfirm: () => {
+            setDialog(null)
+            resolve()
+          },
+        })
       })
-    })
-  }, [])
+    },
+    [],
+  )
 
   const showConfirm = useCallback(
     (
       title: string,
       message: string,
-      opts?: { confirmLabel?: string; cancelLabel?: string; danger?: boolean },
+      opts?: {
+        confirmLabel?: string
+        cancelLabel?: string
+        danger?: boolean
+        tone?: AppDialogTone
+      },
     ) => {
       return new Promise<boolean>((resolve) => {
         setDialog({
@@ -64,6 +89,7 @@ export function useAppDialog() {
           confirmLabel: opts?.confirmLabel,
           cancelLabel: opts?.cancelLabel,
           danger: opts?.danger,
+          tone: opts?.tone ?? (opts?.danger ? 'danger' : undefined),
           onConfirm: () => {
             setDialog(null)
             resolve(true)
@@ -82,7 +108,13 @@ export function useAppDialog() {
     (
       title: string,
       message: string,
-      choices: { id: string; label: string }[],
+      choices: {
+        id: string
+        label: string
+        detailLabel?: string
+        detail?: string
+      }[],
+      opts?: { cancelLabel?: string; tone?: AppDialogTone },
     ) => {
       return new Promise<string | null>((resolve) => {
         const id = ++seq.current
@@ -92,6 +124,7 @@ export function useAppDialog() {
           title,
           message,
           choices,
+          tone: opts?.tone,
           onChoose: (choiceId) => {
             setDialog(null)
             resolve(choiceId)

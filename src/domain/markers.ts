@@ -11,7 +11,65 @@ import {
 } from './regulations'
 import type { C70029Violation, SingleDayFree } from './rest-70029'
 import { explainSingleDayFree } from './rest-70029'
+import {
+  evaluateRdpForDuty,
+  evaluateRdpForReserve,
+  type RdpLimitResult,
+} from './rest-70070'
+import { evaluateFdpNearMaxLimit } from './fdp-near-limit'
 import { getZonedTimeParts, hoursBetweenTimeZones } from './time'
+
+/** Compact Max FDP / RDP factor lines (meta only — no long prose). */
+function formatRdpMeta(rdp: RdpLimitResult): string[] {
+  const limitLabel =
+    rdp.limitingSource === 'rdp_70070'
+      ? 'RDP'
+      : rdp.limitingSource === 'notice_24h_escape'
+        ? '700.28 (24h notice)'
+        : '700.28'
+  const lines = [
+    `Max FDP (700.28) · ${formatHours(rdp.fdpTableLimitHours)} h`,
+    `Max RDP (700.70) · ${formatHours(rdp.maxRdpHours)} h · RAP start ${pad2(rdp.rapStartHour)}:xx`,
+    `RAP→report · ${formatHours(rdp.elapsedRapToReportHours)} h`,
+    `RDP left for FDP · ${formatHours(rdp.remainingRdpForFdpHours)} h`,
+    `Limiting · ${formatHours(rdp.limitingMaxFdpHours)} h (${limitLabel})`,
+  ]
+  if (rdp.splitRdpExtensionHours > 0) {
+    lines.splice(
+      2,
+      0,
+      `RDP split credit · +${formatHours(rdp.splitRdpExtensionHours)} h`,
+    )
+  }
+  return lines
+}
+
+function pad2(n: number): string {
+  return String(Math.floor(n)).padStart(2, '0')
+}
+
+function briefDutyWhy(opts: {
+  hours: number
+  classification: string
+  rdp: RdpLimitResult | null
+  hasSplit: boolean
+  hasTrailingDh: boolean
+  overLimit: boolean
+}): string {
+  const bits: string[] = [`Duty ${formatHours(opts.hours)} h`]
+  if (opts.classification !== 'Standard day duty') {
+    bits.push(opts.classification)
+  }
+  if (opts.hasTrailingDh) bits.push('trailing DH')
+  if (opts.hasSplit) bits.push('split duty')
+  if (opts.rdp) {
+    bits.push(
+      `Max FDP ${formatHours(opts.rdp.limitingMaxFdpHours)} h (min of 700.28 ${formatHours(opts.rdp.fdpTableLimitHours)} h, RDP left ${formatHours(opts.rdp.remainingRdpForFdpHours)} h)`,
+    )
+    if (opts.overLimit) bits.push('over limit')
+  }
+  return bits.join(' · ')
+}
 
 export interface MarkerExplanation {
   marker: DutyMarker
@@ -107,6 +165,12 @@ const DEFINITIONS: Record<
       'Time free from duty from the beginning of the first local night’s rest until the end of the following local night’s rest (two consecutive local nights with no duty between). Under the 60-hour option, at least one such day must fall entirely within any 168 consecutive hours, and four within any 672 consecutive hours.',
     reference: 'CAR 700.29(1)(c); AC 700-047 §§2.3(i), 4.31–4.32',
   },
+  NEAR: {
+    label: 'Near Max FDP',
+    definition:
+      'Advisory: the scheduled flight duty period ends within 1 hour 30 minutes of the applicable maximum FDP (CAR 700.28 table, plus any 700.50 split extension, limited by 700.70 RDP when on reserve). Within 30 minutes of max, the app prompts with remaining time and extension/UOC guidance (CAR 700.63).',
+    reference: 'CAR 700.28; CAR 700.63; CAR 700.70 (when reserve-linked)',
+  },
 }
 
 function formatHours(h: number): string {
@@ -183,6 +247,15 @@ export function explainMarker(
     whyApplies =
       event.ruleWhy ||
       `Minimum rest of ${hours != null ? formatHours(hours) + ' h' : 'the required duration'} under ${rule}${marker === 'R10' ? ' (10+travel)' : ''}. ${status}`
+  } else if (marker === 'NEAR' && event.type === 'duty') {
+    const near = evaluateFdpNearMaxLimit(event, {
+      regulator,
+      globalAcclTZ,
+      homeBaseTZ: home,
+    })
+    whyApplies =
+      near.message ||
+      `This duty is within 1 h 30 of Max FDP in ${zoneLabel(accl)}.`
   } else if (event.type === 'duty') {
     whyApplies = `Marker ${marker} on duty in ${zoneLabel(accl)} (${regLabel}).`
   } else {
@@ -402,11 +475,15 @@ export function infoSheetFromSdf(
           .map((r) =>
             r === 'load_bearing'
               ? 'Shown because this free day is needed to keep a 168 h / 672 h window compliant (removing it would risk a CAR 700.29 free-time violation).'
-              : r === 'required_before_next'
-                ? 'Shown because recent work intensity means a single day free from duty is needed before further duty in the rolling 168 h window.'
-                : r === 'prospective'
-                  ? 'Not yet completed — this is the earliest two local nights after your last duty where a single day free from duty can still be taken. Schedule free time covering this period before adding more flight duty, or the rolling 168 h window may close without a free day.'
-                  : r,
+              : r === 'covers_work'
+                ? 'Shown for awareness: this free day sits fully inside a rolling 168 h window that also has hours of work (duty, reserve, or standby). CAR 700.29 free-day coverage for that window is already satisfied — you can see it here instead of only noticing when a free day is still missing.'
+                : r === 'post_work_free'
+                  ? 'Shown for awareness: after this duty/reserve/standby the calendar is free long enough to complete a single day free from duty (two local nights). Free-day structure may not be mandatory yet, but this chip shows the free day you already have so far.'
+                  : r === 'required_before_next'
+                    ? 'Shown because recent work intensity means a single day free from duty is needed before further duty in the rolling 168 h window.'
+                    : r === 'prospective'
+                      ? 'Not yet completed — this is the earliest two local nights after your last duty where a single day free from duty can still be taken. Schedule free time covering this period before adding more flight duty, or the rolling 168 h window may close without a free day.'
+                      : r,
           )
           .join(' ')
       : ''
@@ -463,12 +540,15 @@ export function infoSheetFrom70029Violation(
 
 /**
  * Build a three-section info sheet for a duty or rest calendar bar.
+ * Pass `allEvents` so CAR 700.70 RDP can link a prior reserve when the FDP
+ * has no stored `rapStart`.
  */
 export function explainEvent(
   event: DutyEvent,
   regulator: Regulator,
   globalAcclTZ: string,
   homeBaseTZ?: string,
+  allEvents?: DutyEvent[],
 ): InfoSheetContent {
   const accl = locationTZ(event, 'accl', globalAcclTZ)
   const startLoc = locationTZ(event, 'start', globalAcclTZ)
@@ -478,6 +558,7 @@ export function explainEvent(
     (event.end.getTime() - event.start.getTime()) / (1000 * 60 * 60)
   const regLabel =
     regulator === 'TC' ? 'Transport Canada (CAR Subpart 700)' : regulator
+  const schedule = allEvents ?? [event]
 
   const meta = [
     `Start · ${formatWhen(event.start)}`,
@@ -499,10 +580,6 @@ export function explainEvent(
       )
     }
 
-    let why = `This flight duty period runs ${formatHours(hours)} h from report to final release, evaluated for ${regLabel} using acclimatized time in ${zoneLabel(accl)}.`
-    if (classification !== 'Standard day duty') {
-      why += ` It is classified as ${classification.toLowerCase()} for early/late/night rules (AC 700-047 §2.3).`
-    }
     if (event.endsWithPositioning && event.operatingEnd) {
       const opH =
         (event.operatingEnd.getTime() - event.start.getTime()) / (1000 * 60 * 60)
@@ -510,7 +587,7 @@ export function explainEvent(
         (event.end.getTime() - event.operatingEnd.getTime()) / (1000 * 60 * 60)
       meta.push(`Operating release · ${formatWhen(event.operatingEnd)}`)
       meta.push(
-        `Operating FDP · ${formatHours(opH)} h · Positioning (DH) · ${formatHours(posH)} h`,
+        `Operating FDP · ${formatHours(opH)} h · Positioning · ${formatHours(posH)} h`,
       )
       if (event.operatingSectors != null) {
         meta.push(`Operating sectors · ${event.operatingSectors}`)
@@ -519,28 +596,50 @@ export function explainEvent(
         meta.push(`Positioning sectors · ${event.positioningSectors}`)
       }
       if (event.positioningAgreed) {
-        meta.push('Extended positioning · crew agreed (700.43(3))')
+        meta.push('Extended positioning agreed (700.43(3))')
       }
-      why += ` Ends with trailing deadhead/positioning after operating release (${formatHours(posH)} h). Positioning flights do not count toward the 700.28 sector column; rest after an overrun follows CAR 700.43.`
     } else if (event.operatingSectors != null) {
       meta.push(`Operating sectors · ${event.operatingSectors}`)
       if (event.positioningSectors != null && event.positioningSectors > 0) {
         meta.push(`Positioning sectors · ${event.positioningSectors}`)
+      }
+      if (event.avgSectorTime) {
+        meta.push(
+          `Avg sector · ${
+            event.avgSectorTime === '<30'
+              ? '<30 min'
+              : event.avgSectorTime === '30-50'
+                ? '30–50 min'
+                : '≥50 min'
+          }`,
+        )
       }
     }
     if (event.splitBreak) {
       const brH =
         (event.splitBreak.end.getTime() - event.splitBreak.start.getTime()) /
         (1000 * 60 * 60)
-      meta.push(
-        `Split-duty break · ${formatHours(brH)} h (${formatWhen(event.splitBreak.start)} → ${formatWhen(event.splitBreak.end)})`,
-      )
-      why +=
-        ' Includes a CAR 700.50 split-duty break in suitable accommodation (mid-FDP; not post-duty rest). The break counts toward FDP length but not hours of work.'
+      meta.push(`Split break · ${formatHours(brH)} h`)
     }
-    if (event.violated) {
-      why += ' A compliance flag is set (for example overlap with rest).'
+
+    const rdp = evaluateRdpForDuty(event, schedule, {
+      regulator,
+      globalAcclTZ,
+      homeBaseTZ: home,
+    })
+    if (rdp) {
+      meta.push(...formatRdpMeta(rdp))
     }
+
+    const overLimit = !!rdp && hours > rdp.limitingMaxFdpHours + 1e-9
+    const why = briefDutyWhy({
+      hours,
+      classification,
+      rdp,
+      hasSplit: !!event.splitBreak,
+      hasTrailingDh: !!event.endsWithPositioning,
+      overLimit,
+    })
 
     return {
       badge: event.endsWithPositioning
@@ -549,14 +648,67 @@ export function explainEvent(
           ? 'Duty+Split'
           : 'Duty',
       title: event.title || 'Flight duty period',
-      rule: 'A flight duty period (FDP) is the time from the earlier of report for duty, report for flight, positioning, or standby, until engines off / rotors stopped at the end of the last operating flight. Positioning after that is duty/hours of work and may extend total duty under CAR 700.43. Maximum operating FDP depends on acclimatized start time, operating sectors (positioning not counted), average sector time, and any augmentation or split-duty provisions (CAR 700.50 mid-FDP break in suitable accommodation).',
+      rule: rdp
+        ? 'Max FDP = shorter of 700.28 table (start hour, sectors, avg sector) and RDP left after RAP→report (700.70).'
+        : 'Max FDP from 700.28 table (acclimatized start hour, operating sectors, avg sector time).',
       reference:
         regulator === 'TC'
-          ? 'CAR 700.28 (maximum FDP, incl. (6) positioning not a flight); CAR 700.50 (split flight duty); CAR 700.43 (rest after positioning); CAR 101 / AC 700-047 §2.3'
+          ? rdp
+            ? 'CAR 700.28; CAR 700.70(7)'
+            : 'CAR 700.28'
           : `${regLabel} flight duty period limitations`,
       whyApplies: why,
       meta,
-      violated: event.violated,
+      violated: event.violated || overLimit,
+      eventId: event.id,
+    }
+  }
+
+  if (event.type === 'reserve' || event.type === 'standby') {
+    const factor =
+      event.workFactor != null && Number.isFinite(event.workFactor)
+        ? event.workFactor
+        : event.type === 'reserve'
+          ? 0.33
+          : 1
+    const kindTitle =
+      event.title || (event.type === 'reserve' ? 'Reserve' : 'Standby')
+    let why = `Work factor ${factor}`
+    let reference =
+      event.type === 'reserve' ? 'CAR 700.29(3); CAR 700.70' : 'CAR 700.29(3); CAR 700.71'
+    let rule =
+      event.type === 'reserve'
+        ? 'Reserve counts 33% toward hours of work. If called to an FDP, Max FDP also uses 700.70 RDP (RAP start → FDP end).'
+        : 'Standby counts 100% toward hours of work (700.71).'
+
+    if (event.type === 'reserve') {
+      const pair = evaluateRdpForReserve(event, schedule, {
+        regulator,
+        globalAcclTZ,
+        homeBaseTZ: home,
+      })
+      if (pair) {
+        meta.push(
+          `Linked FDP · ${formatWhen(pair.duty.start)} → ${formatWhen(pair.duty.end)}`,
+        )
+        meta.push(...formatRdpMeta(pair.rdp))
+        why = `Work factor ${factor} · Max FDP ${formatHours(pair.rdp.limitingMaxFdpHours)} h (min of 700.28 ${formatHours(pair.rdp.fdpTableLimitHours)} h, RDP left ${formatHours(pair.rdp.remainingRdpForFdpHours)} h)`
+        reference = 'CAR 700.29(3); CAR 700.70(7); CAR 700.28'
+      }
+    }
+    if (event.locationIcao) {
+      meta.push(`Location · ${event.locationIcao}`)
+    }
+    meta.push(`Work factor · ${factor}`)
+
+    return {
+      badge: event.type === 'reserve' ? 'RSV' : 'SBY',
+      title: kindTitle,
+      rule,
+      reference,
+      whyApplies: why,
+      meta,
+      canDelete: true,
       eventId: event.id,
     }
   }

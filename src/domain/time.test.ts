@@ -1,18 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import {
+  blockTimeMs,
   combineLocalDateAndTime,
   dayBarPosition,
+  formatBlockDuration,
   formatHHmm,
   formatHHmmInTZ,
+  formatZuluHHmm,
   getHourInTZ,
   getMinutesInTZ,
   getZonedTimeParts,
+  localWallToZuluHHmm,
   nextZonedWallTime,
   parseLocalDateTime,
   parseZonedDateTime,
   toDateInputValueInTZ,
   toLocalDateInputValue,
+  wallTimeLocalZulu,
   zonedWallTime,
+  zuluHHmmToLocalWall,
 } from './time'
 
 describe('toLocalDateInputValue', () => {
@@ -150,5 +156,61 @@ describe('zoned wall-time helpers', () => {
     const p = getZonedTimeParts(twoAm, 'UTC')
     expect(p.day).toBe(10)
     expect(p.hour).toBe(2)
+  })
+})
+
+describe('blockTimeMs / wallTimeLocalZulu', () => {
+  it('computes block across same zone', () => {
+    const ms = blockTimeMs(
+      '2026-07-15',
+      '10:00',
+      'America/Toronto',
+      '2026-07-15',
+      '12:30',
+      'America/Toronto',
+    )
+    expect(ms).toBe(2.5 * 3_600_000)
+    expect(formatBlockDuration(ms)).toBe('2h 30m')
+  })
+
+  it('computes block across time zones', () => {
+    // 10:00 Toronto = 14:00Z; 12:00 Vancouver = 19:00Z → 5h
+    const ms = blockTimeMs(
+      '2026-07-15',
+      '10:00',
+      'America/Toronto',
+      '2026-07-15',
+      '12:00',
+      'America/Vancouver',
+    )
+    expect(ms).toBe(5 * 3_600_000)
+  })
+
+  it('returns local L + Zulu for a wall clock', () => {
+    const info = wallTimeLocalZulu(
+      '2026-07-15',
+      '14:35',
+      'America/Toronto',
+      '24h',
+    )
+    expect(info).not.toBeNull()
+    expect(info!.local).toBe('14:35')
+    // EDT in July: UTC-4 → 18:35Z
+    expect(info!.zulu).toBe('18:35Z')
+    expect(formatZuluHHmm(info!.instant)).toBe('18:35Z')
+  })
+
+  it('round-trips local ↔ zulu for dual input', () => {
+    const z = localWallToZuluHHmm('2026-07-15', '14:35', 'America/Toronto')
+    expect(z).toBe('18:35')
+    const back = zuluHHmmToLocalWall(
+      '2026-07-15',
+      z,
+      'America/Toronto',
+      '14:35',
+    )
+    expect(back).not.toBeNull()
+    expect(back!.timeHHmm).toBe('14:35')
+    expect(back!.dateKey).toBe('2026-07-15')
   })
 })

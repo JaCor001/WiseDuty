@@ -2,11 +2,19 @@
  * One-pass calendar day layout for bars/markers/content height.
  * Pure: no React. Call once per schedule/view change, not per click.
  */
-import type { DutyEvent, Regulator } from './types'
+import type { DutyEvent, Regulator, TimeFormat } from './types'
 import { phantomDisruptiveRestExtension } from './events'
 import { buildEventsByDayKey, eventsOnDayKey } from './day-index'
 import {
+  buildDayTimeStamps,
+  EVENT_BAR_HEIGHT_PCT,
+  type DayTimeStampSpec,
+  type TimeStampInput,
+} from './time-stamps'
+import {
   dayContentMinRem,
+  elnHostKey,
+  isElnMarkerType,
   isHostDayFor,
   markerBandTiers,
   markerVerticalRole,
@@ -17,11 +25,17 @@ import {
 } from './marker-layout'
 import {
   eventsOverlap,
+  fdpOperatingEnd,
   getDutyMarkers,
   markerBarAnchor,
   markerChipLabel,
   type DutyMarker,
 } from './regulations'
+import {
+  evaluateFdpNearMaxLimit,
+  fdpLimitDialogTone,
+  type FdpDialogTone,
+} from './fdp-near-limit'
 import type { DisplaySdf } from './rest-70029'
 import {
   addCivilDaysInTimeZone,
@@ -76,6 +90,50 @@ function isSdfCoveredByStructuralRest(
   )
 }
 
+/** Slack when treating rest as covering a full civil day (edge minutes). */
+const REST_FULL_DAY_SLACK_MS = 30 * 60 * 1000
+
+/**
+ * True when required rest alone covers essentially the entire civil day, so no
+ * FDP / reserve / standby can be accepted that day without overlapping rest.
+ */
+export function restsBlockFullCivilDay(
+  dayEvents: DutyEvent[],
+  dayStartMs: number,
+  dayEndMs: number,
+): boolean {
+  if (dayEvents.length === 0) return false
+  if (!dayEvents.every((e) => e.type === 'rest')) return false
+
+  const segments = dayEvents
+    .map((e) => ({
+      a: Math.max(e.start.getTime(), dayStartMs),
+      b: Math.min(e.end.getTime(), dayEndMs),
+    }))
+    .filter((iv) => iv.b > iv.a)
+    .sort((x, y) => x.a - y.a)
+  if (segments.length === 0) return false
+
+  // Merge overlapping rest on this day
+  const merged: { a: number; b: number }[] = []
+  for (const iv of segments) {
+    const last = merged[merged.length - 1]
+    if (last && iv.a <= last.b + REST_FULL_DAY_SLACK_MS) {
+      last.b = Math.max(last.b, iv.b)
+    } else {
+      merged.push({ ...iv })
+    }
+  }
+
+  // Single merged block must span midnight→midnight (within slack)
+  if (merged.length !== 1) return false
+  const cover = merged[0]
+  return (
+    cover.a <= dayStartMs + REST_FULL_DAY_SLACK_MS &&
+    cover.b >= dayEndMs - REST_FULL_DAY_SLACK_MS
+  )
+}
+
 export interface PhantomSegment {
   key: string
   restId: string
@@ -122,6 +180,8 @@ export interface DayMarkerSpec {
   sdfReasons?: string[]
 }
 
+export type { DayTimeStampSpec }
+
 export interface DayLayoutSpec {
   dayKey: string
   dayStartMs: number
@@ -131,6 +191,8 @@ export interface DayLayoutSpec {
   contentMinRem: number
   bars: DayBarSpec[]
   markers: DayMarkerSpec[]
+  /** Start/end clock labels with thin connectors to bar edges. */
+  timeStamps: DayTimeStampSpec[]
   leaders: Array<{ key: string; left: string; top: string; height: string }>
   showViolation: boolean
   violationLeftPct: number
@@ -184,6 +246,9 @@ export function buildScheduleLayout(
   hostMap: Map<string, number>,
   phantoms: PhantomSegment[],
   violations: Array<{ windowEnd: Date }>,
+  timeFormat: TimeFormat = '24h',
+  /** Precomputed E/L/N host days (`eventId:type` → dayStartMs). */
+  elnHostMap: Map<string, number> = new Map(),
 ): { byKey: Map<string, DayLayoutSpec>; sharedDayMinRem: number } {
   const viewParts = getZonedTimeParts(viewMonth, calendarTZ)
   const byKey = new Map<string, DayLayoutSpec>()
@@ -198,13 +263,16 @@ export function buildScheduleLayout(
       viewYear: viewParts.year,
       viewMonth: viewParts.month,
       dayEvents: eventsOnDayKey(eventsByDay, dayKey),
+      allEvents: events,
       displaySdfs,
       calendarTZ,
       regulator,
       acclTZ,
       hostMap,
+      elnHostMap,
       phantoms,
       violations,
+      timeFormat,
     })
     byKey.set(layout.dayKey, layout)
     sharedMin = Math.max(sharedMin, layout.contentMinRem)
@@ -219,26 +287,33 @@ function buildOneDayLayout(opts: {
   viewMonth: number
   /** Pre-filtered events for this civil day (from day-index). */
   dayEvents: DutyEvent[]
+  /** Full schedule for RAP auto-link (700.70) when evaluating ≈MAX. */
+  allEvents: DutyEvent[]
   displaySdfs: DisplaySdf[]
   calendarTZ: string
   regulator: Regulator
   acclTZ: string
   hostMap: Map<string, number>
+  elnHostMap: Map<string, number>
   phantoms: PhantomSegment[]
   violations: Array<{ windowEnd: Date }>
+  timeFormat: TimeFormat
 }): DayLayoutSpec {
   const {
     date,
     viewYear,
     viewMonth,
     dayEvents,
+    allEvents,
     displaySdfs,
     calendarTZ,
     regulator,
     acclTZ,
     hostMap,
+    elnHostMap,
     phantoms,
     violations,
+    timeFormat,
   } = opts
 
   const dayStart = startOfDayInTimeZone(date, calendarTZ)
@@ -248,6 +323,7 @@ function buildOneDayLayout(opts: {
   const dayEndMs = dayEnd.getTime()
   const dayParts = getZonedTimeParts(date, calendarTZ)
   const bars: DayBarSpec[] = []
+  const timeStampInputs: TimeStampInput[] = []
   type RawMarker = {
     type: DutyMarker
     eventId: string
@@ -260,8 +336,12 @@ function buildOneDayLayout(opts: {
     sdfProspective?: boolean
     sdfReasons?: string[]
     sdfRef?: DisplaySdf['sdf']
+    /** ≈MAX chip severity — matches AppDialog amber / danger chrome. */
+    nearTone?: FdpDialogTone
   }
   const rawMarkers: RawMarker[] = []
+  /** Per-duty ≈MAX tone so the chip can match the alert palette. */
+  const nearToneByDutyId = new Map<string, FdpDialogTone>()
 
   dayEvents.forEach((event) => {
     let barTop = BAR_TOP
@@ -294,20 +374,42 @@ function buildOneDayLayout(opts: {
     )
 
     const dayKeyAccl = getZonedTimeParts(date, acclTZ).dayKey
-    const markers = getDutyMarkers(
-      event,
-      regulator,
-      acclTZ,
-      isStart,
-      isEnd,
-      dayKeyAccl,
-    )
+    // Full ELN set for the duty; host day is chosen schedule-wide (roomier cell).
+    const markers = getDutyMarkers(event, regulator, acclTZ, true, true)
+    // Near Max FDP chip under the bar on operating/release day
+    if (event.type === 'duty') {
+      const tz = event.acclTZ || acclTZ
+      const opEnd = fdpOperatingEnd(event)
+      const endKey = getZonedTimeParts(opEnd, tz).dayKey
+      if (endKey === dayKeyAccl) {
+        const near = evaluateFdpNearMaxLimit(event, {
+          regulator,
+          globalAcclTZ: acclTZ,
+          allEvents,
+        })
+        if (near.near && !markers.includes('NEAR')) {
+          markers.push('NEAR')
+          nearToneByDutyId.set(event.id, fdpLimitDialogTone(near))
+        }
+      }
+    }
     const showRestChip =
       event.type !== 'rest' || isHostDayFor(hostMap, event.id, dayStartMs)
     const coveringDisplay =
       event.type === 'rest' ? findDisplaySdfForRest(event, displaySdfs) : undefined
     markers.forEach((marker) => {
       if (event.type === 'rest' && !showRestChip) return
+      // E/L/N: roomier host day when precomputed; else natural start/end day
+      if (isElnMarkerType(marker)) {
+        const key = elnHostKey(event.id, marker)
+        if (elnHostMap.has(key)) {
+          if (!isHostDayFor(elnHostMap, key, dayStartMs)) return
+        } else if (marker === 'E' && !isStart) {
+          return
+        } else if ((marker === 'L' || marker === 'N') && !isEnd) {
+          return
+        }
+      }
       const attachSdf = marker === 'SDF' && coveringDisplay
       rawMarkers.push({
         type: marker,
@@ -323,6 +425,8 @@ function buildOneDayLayout(opts: {
           : undefined,
         sdfReasons: attachSdf ? coveringDisplay.reasons : undefined,
         sdfRef: attachSdf ? coveringDisplay.sdf : undefined,
+        nearTone:
+          marker === 'NEAR' ? nearToneByDutyId.get(event.id) : undefined,
       })
     })
 
@@ -353,6 +457,32 @@ function buildOneDayLayout(opts: {
       title: event.title,
       kind: 'event',
     })
+
+    // Start/end clock stamps on the civil day that owns the edge.
+    // Do NOT gate on bar width: a rest ending 00:04 is only ~0.3% of the end
+    // day, but the end stamp must still show (was dropped by width >= 0.4).
+    // Multi-day open edges stay unstamped because isStart/isEnd are false there.
+    if (isStart) {
+      timeStampInputs.push({
+        eventId: event.id,
+        at: event.start,
+        leftPct: left,
+        edge: 'start',
+        barTop,
+        barTopPct,
+      })
+    }
+    if (isEnd) {
+      timeStampInputs.push({
+        eventId: event.id,
+        at: event.end,
+        // Clamp so a near-midnight end never sits past the cell (float noise)
+        leftPct: Math.min(100, Math.max(0, left + width)),
+        edge: 'end',
+        barTop,
+        barTopPct,
+      })
+    }
 
     // Flight legs inside FDP: darker sub-segments on the same vertical band
     if (event.type === 'duty' && event.flights && event.flights.length > 0) {
@@ -494,17 +624,38 @@ function buildOneDayLayout(opts: {
     })
   })
 
+  // Time stamps live above the bar; E/L/N and rest chips share the below band.
+  const timeStamps = buildDayTimeStamps(timeStampInputs, {
+    tz: calendarTZ,
+    timeFormat,
+  })
+
   const chipHPct = 13
   const chipWNarrowPct = 18
   const chipWWidePct = 28
-  const barHPct = 10
+  const barHPct = EVENT_BAR_HEIGHT_PCT
   const cellGapPct = 3
   const barChipGapPx = 4
-  const minTopPct = 22
+  const minTopPct = 18
   const maxBottomPct = 97
   const edgeGapCss = 'var(--marker-gap, 6px)'
 
-  const layoutInputs: MarkerLayoutInput[] = rawMarkers.map((marker, index) => {
+  // Prefer duty chips closer to the bar, then rest — reduces visual collision
+  // when E/L/N and RR/LNR share a day (stack order in resolveMarkerOverlaps).
+  const markerPriority = (type: DutyMarker): number => {
+    if (type === 'E' || type === 'L' || type === 'N') return 0
+    if (type === 'NEAR') return 1
+    return 2
+  }
+  const orderedRaw = rawMarkers
+    .map((m, index) => ({ m, index }))
+    .sort((a, b) => {
+      const p = markerPriority(a.m.type) - markerPriority(b.m.type)
+      if (p !== 0) return p
+      return a.m.left - b.m.left
+    })
+
+  const layoutInputs: MarkerLayoutInput[] = orderedRaw.map(({ m: marker, index }) => {
     const role = markerVerticalRole(marker.type)
     const restMarker =
       marker.type === 'LNR' ||
@@ -516,15 +667,26 @@ function buildOneDayLayout(opts: {
       marker.type === 'LNR2' ||
       marker.type === 'LNR3' ||
       marker.type === 'SDF' ||
+      marker.type === 'NEAR' ||
       (marker.violated && restMarker)
-    const widthPct = isWide ? chipWWidePct : chipWNarrowPct
+    // End-anchored chips need a wider layout budget so labels like ≈MAX
+    // are not clipped at the day-cell edge.
+    const widthPct =
+      marker.type === 'NEAR'
+        ? Math.max(chipWWidePct, 22)
+        : isWide
+          ? chipWWidePct
+          : chipWNarrowPct
     const anchor = markerBarAnchor(marker.type)
+    // Extra edge inset for end-anchored chips (especially NEAR)
+    const edgeGapPct =
+      anchor === 'end' ? Math.max(cellGapPct, 5) : cellGapPct
     const leftPct = preferredMarkerLeftPct(
       marker.left,
       marker.width,
       widthPct,
       anchor,
-      cellGapPct,
+      edgeGapPct,
     )
     const preferredTopPct = preferredMarkerTopPct(
       role,
@@ -548,9 +710,12 @@ function buildOneDayLayout(opts: {
       barTopPct: marker.barTopPct,
       barHPct,
       barAttachXPct,
+      // E/L/N never get leader lines — stay associated via duty-aligned X
+      allowLeader: !isElnMarkerType(marker.type),
     }
   })
 
+  // Stack below-bar chips (E/L/N + rest + ≈MAX) so they don't overlap
   const resolved = resolveMarkerOverlaps(layoutInputs, {
     gapPct: 1.8,
     minTopPct,
@@ -577,58 +742,74 @@ function buildOneDayLayout(opts: {
       marker.type === 'LNR2' ||
       marker.type === 'LNR3' ||
       marker.type === 'SDF' ||
+      marker.type === 'NEAR' ||
       (marker.violated && restMarker)
     const violatedClass = marker.violated && restMarker
     const chipH = 'var(--marker-chip-height, 1.2em)'
     const barTopCss = marker.barTop
     const anchor = markerBarAnchor(marker.type)
-    const stackDeltaPct = place.topPct - layoutIn.preferredTopPct
+    // Below-bar chips: preferred top is under the bar; stack offset is the
+    // delta from preferredTop after resolveMarkerOverlaps.
     const top =
       place.role === 'above'
-        ? `calc(${barTopCss} - ${chipH} - ${barChipGapPx}px + ${stackDeltaPct}%)`
-        : `calc(${barTopCss} + var(--event-bar-height) + ${barChipGapPx}px + ${stackDeltaPct}%)`
-    const chipW = isWide
-      ? 'var(--marker-chip-width-wide, 2.4em)'
-      : 'var(--marker-chip-width, 1.55em)'
-    const maxWidthCss = `calc(100% - 2 * ${edgeGapCss})`
-    let preferredLeft: string
-    if (anchor === 'end') {
-      const barRightPct = Math.min(100, marker.left + marker.width)
-      preferredLeft = `calc(${barRightPct}% - ${chipW})`
-    } else if (anchor === 'start') {
-      preferredLeft = `${marker.left}%`
-    } else {
-      preferredLeft = `${place.leftPct}%`
-    }
-    const leftStyle = `clamp(${edgeGapCss}, ${preferredLeft}, calc(100% - ${edgeGapCss} - ${chipW}))`
+        ? `${place.topPct}%`
+        : `calc(${barTopCss} + var(--event-bar-height) + ${barChipGapPx}px + ${place.topPct - layoutIn.preferredTopPct}%)`
+    const chipW =
+      marker.type === 'NEAR'
+        ? 'var(--marker-chip-width-near, 2.65em)'
+        : isWide
+          ? 'var(--marker-chip-width-wide, 2.4em)'
+          : 'var(--marker-chip-width, 1.55em)'
+    // Larger inset for end-anchored chips so ≈MAX is not clipped by the cell edge
+    const edgeInset =
+      anchor === 'end' || marker.type === 'NEAR'
+        ? 'var(--marker-edge-inset, 10px)'
+        : edgeGapCss
+    const maxWidthCss = `calc(100% - 2 * ${edgeInset})`
 
-    if (place.leader) {
+    // Always use resolved left so lateral deconflict against stamps is applied
+    // (start/end anchors previously ignored place.leftPct).
+    const leftStyle = `clamp(${edgeInset}, ${place.leftPct}%, calc(100% - ${edgeInset} - ${chipW}))`
+    const rightStyle = 'auto'
+
+    // Leader lines only for below-bar rest markers (RR/LNR/SDF). E/L/N stay
+    // associated by duty-aligned X — no thin lines to bars.
+    if (place.leader && place.role === 'below') {
       const { x1, y1, y2 } = place.leader
       const topY = Math.min(y1, y2)
       const height = Math.abs(y2 - y1)
       if (height > 0.4) {
         leaders.push({
           key: `leader-${layoutId}`,
-          left: `clamp(${edgeGapCss}, ${x1}%, calc(100% - ${edgeGapCss}))`,
+          left: `clamp(${edgeInset}, ${x1}%, calc(100% - ${edgeInset}))`,
           top: `${topY}%`,
           height: `${height}%`,
         })
       }
     }
 
+    const nearTone = marker.nearTone
+    const nearToneClass =
+      marker.type === 'NEAR'
+        ? nearTone === 'danger'
+          ? ' NEAR-danger'
+          : ' NEAR-amber'
+        : ''
     const label =
       marker.type === 'SDF' && marker.sdfProspective
         ? 'SDF?'
-        : markerChipLabel(marker.type, marker.violated)
+        : marker.type === 'NEAR' && nearTone === 'danger'
+          ? 'MAX!'
+          : markerChipLabel(marker.type, marker.violated)
 
     markers.push({
       key: layoutId,
       type: marker.type,
       eventId: marker.eventId,
-      className: `marker marker-anchored marker-button ${marker.type}${violatedClass ? ' LNR-violated' : ''}${marker.sdfProspective ? ' SDF-prospective' : ''}`,
+      className: `marker marker-anchored marker-button ${marker.type}${violatedClass ? ' LNR-violated' : ''}${marker.sdfProspective ? ' SDF-prospective' : ''}${nearToneClass}`,
       top,
       left: leftStyle,
-      right: 'auto',
+      right: rightStyle,
       maxWidth: maxWidthCss,
       minWidth: 0,
       width: 'max-content',
@@ -637,8 +818,17 @@ function buildOneDayLayout(opts: {
         ? marker.sdfProspective
           ? 'Single day free from duty needed before further duty (CAR 700.29) — tap for details'
           : 'Single day free from duty (CAR 700.29) — tap for details'
-        : `${marker.type} — tap for definition`,
-      ariaLabel: `${marker.type}. Tap for definition and why it applies.`,
+        : marker.type === 'NEAR'
+          ? nearTone === 'danger'
+            ? 'At or past Max FDP — tap for extension / UOC guidelines'
+            : 'Near Max FDP — tap for extension / UOC guidelines'
+          : `${marker.type} — tap for definition`,
+      ariaLabel:
+        marker.type === 'NEAR'
+          ? nearTone === 'danger'
+            ? 'Max FDP limit. Tap for extension and UOC guidelines.'
+            : 'Near Max FDP. Tap for extension and UOC guidelines.'
+          : `${marker.type}. Tap for definition and why it applies.`,
       sheet: marker.sdfRef
         ? 'sdf'
         : marker.event.type === 'rest'
@@ -660,6 +850,9 @@ function buildOneDayLayout(opts: {
   })
 
   // Status + violation icon
+  // Purple (amber class) only when the day is rest-only *and* required rest
+  // covers the full civil day — no FDP/reserve/standby can be accepted that day.
+  // Partial rest ends (e.g. 12 h overnight) and awareness-only SDF chips stay white.
   let status: DayLayoutSpec['status'] = 'white'
   if (dayEvents.some((e) => e.violated)) status = 'red'
   else if (
@@ -667,10 +860,7 @@ function buildOneDayLayout(opts: {
   )
     status = 'red'
   else if (dayEvents.some((e) => e.type === 'duty')) status = 'blue'
-  else if (
-    dayEvents.some((e) => e.type === 'rest') ||
-    displaySdfs.some((d) => d.sdf.start < dayEnd && d.sdf.end > dayStart)
-  )
+  else if (restsBlockFullCivilDay(dayEvents, dayStartMs, dayEndMs))
     status = 'amber'
 
   let violationLeftPct = 0
@@ -741,6 +931,7 @@ function buildOneDayLayout(opts: {
     contentMinRem,
     bars,
     markers,
+    timeStamps,
     leaders,
     showViolation,
     violationLeftPct,
